@@ -1,0 +1,45 @@
+name: Build Abir AI APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        run: |
+          unzip -o Bengali-Voice-Buddy.zip -d project
+
+      - name: Find Android project
+        run: |
+          echo "Searching for Gradle project..."
+          find project -name "gradlew" -type f | head -20
+
+      - name: Make Gradle executable
+        run: |
+          chmod +x "$(find project -name gradlew -type f | head -1)"
+
+      - name: Build APK
+        run: |
+          GRADLEW="$(find project -name gradlew -type f | head -1)"
+          cd "$(dirname "$GRADLEW")"
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Find APK
+        run: |
+          find project -name "*.apk" -type f
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abir-AI-APK
+          path: |
+            project/**/*.apk
