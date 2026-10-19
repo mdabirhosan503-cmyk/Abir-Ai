@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -25,111 +25,55 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Extract project ZIP files
+      - name: Find Expo project
         shell: bash
         run: |
           set -e
 
-          echo "Checking repository files..."
-          find . -maxdepth 5 -type f | head -200
+          echo "Searching for Expo project..."
 
-          echo ""
-          echo "Searching for ZIP files..."
+          PROJECT_DIR=""
 
-          ZIP_FOUND=false
+          while IFS= read -r file; do
+            DIR=$(dirname "$file")
 
-          while IFS= read -r ZIP_FILE; do
-            ZIP_FOUND=true
+            if grep -q '"expo"' "$file" 2>/dev/null; then
+              PROJECT_DIR="$DIR"
+              echo "Expo project found:"
+              echo "$PROJECT_DIR"
+              break
+            fi
+          done < <(find . -type f -name "package.json" -not -path "./.git/*")
 
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Expo project was not found."
             echo ""
-            echo "Extracting:"
-            echo "$ZIP_FILE"
-
-            unzip -o "$ZIP_FILE" -d ./extracted-project
-          done < <(find . -type f -iname "*.zip")
-
-          if [ "$ZIP_FOUND" = true ]; then
-            echo "ZIP extraction completed."
-          else
-            echo "No ZIP file found."
+            echo "Available package.json files:"
+            find . -type f -name "package.json" -not -path "./.git/*"
+            echo ""
+            echo "Repository files:"
+            find . -maxdepth 5 -type f | head -300
+            exit 1
           fi
 
-      - name: Find project
-        shell: bash
-        run: |
-          set -e
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Searching for package.json..."
-
-          PACKAGE_FILE=$(find . \
-            -type f \
-            -name "package.json" \
-            -not -path "./.git/*" \
-            -print | head -n 1)
-
-          if [ -n "$PACKAGE_FILE" ]; then
-            PROJECT_DIR=$(dirname "$PACKAGE_FILE")
-
-            echo "package.json found:"
-            echo "$PACKAGE_FILE"
-
-            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-            exit 0
-          fi
-
-          echo "package.json not found."
-          echo "Searching for Android Gradle project..."
-
-          GRADLE_FILE=$(find . \
-            -type f \
-            -name "gradlew" \
-            -not -path "./.git/*" \
-            -print | head -n 1)
-
-          if [ -n "$GRADLE_FILE" ]; then
-            ANDROID_DIR=$(dirname "$GRADLE_FILE")
-
-            echo "Android project found:"
-            echo "$ANDROID_DIR"
-
-            echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-
-            exit 0
-          fi
-
-          echo ""
-          echo "ERROR: Abir AI project could not be found."
-          echo ""
-          echo "Files currently available:"
-          find . -maxdepth 6 -type f | head -300
-
-          exit 1
-
-      - name: Show project files
+      - name: Show project
         shell: bash
         run: |
           echo "Project directory:"
-          echo "$PROJECT_DIR"
+          cd "$PROJECT_DIR"
+          pwd
 
-          if [ -n "$PROJECT_DIR" ]; then
-            cd "$PROJECT_DIR"
-            pwd
-            echo ""
-            ls -la
-          fi
+          echo ""
+          echo "Project files:"
+          ls -la
 
-          if [ -n "$ANDROID_DIR" ]; then
-            echo ""
-            echo "Android directory:"
-            cd "$ANDROID_DIR"
-            pwd
-            echo ""
-            ls -la
-          fi
+          echo ""
+          echo "package.json:"
+          cat package.json
 
       - name: Install dependencies
-        if: env.PROJECT_DIR != ''
         shell: bash
         run: |
           set -e
@@ -137,47 +81,49 @@ jobs:
           cd "$PROJECT_DIR"
 
           if [ -f pnpm-lock.yaml ]; then
-            echo "Using pnpm"
+            echo "pnpm project detected"
 
             corepack enable
-            corepack prepare pnpm@latest --activate
-
             pnpm install --frozen-lockfile
 
-          elif [ -f package-lock.json ]; then
-            echo "Using npm"
-
-            npm ci
-
           elif [ -f yarn.lock ]; then
-            echo "Using yarn"
+            echo "yarn project detected"
 
             corepack enable
             yarn install --frozen-lockfile
 
-          elif [ -f package.json ]; then
-            echo "No lock file found."
-            echo "Using npm install."
+          elif [ -f package-lock.json ]; then
+            echo "npm project detected"
 
-            npm install
+            npm ci
 
           else
-            echo "package.json not found."
-            exit 1
+            echo "No lock file found."
+            echo "Installing with npm..."
+
+            npm install
           fi
 
-      - name: Prepare Android project
-        if: env.PROJECT_DIR != ''
+      - name: Check Expo
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_DIR"
 
-          if [ -d "android" ]; then
-            echo "Android folder already exists."
+          npx expo --version
+
+      - name: Prepare Android project
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          if [ -f "android/gradlew" ]; then
+            echo "Android project already exists."
           else
-            echo "Android folder not found."
+            echo "Android project does not exist."
             echo "Running Expo prebuild..."
 
             npx expo prebuild \
@@ -186,21 +132,11 @@ jobs:
           fi
 
           if [ ! -f "android/gradlew" ]; then
-            echo "ERROR: android/gradlew not found."
-
-            echo "Trying Expo prebuild again..."
-
-            npx expo prebuild \
-              --platform android \
-              --non-interactive
-          fi
-
-          if [ ! -f "android/gradlew" ]; then
-            echo "ERROR: Gradle wrapper could not be created."
+            echo "ERROR: Android Gradle wrapper was not created."
             exit 1
           fi
 
-          echo "Android project ready."
+          echo "Android project is ready."
 
           echo "ANDROID_DIR=$PROJECT_DIR/android" >> "$GITHUB_ENV"
 
@@ -209,14 +145,14 @@ jobs:
         run: |
           chmod +x "$ANDROID_DIR/gradlew"
 
-      - name: Build APK
+      - name: Build Debug APK
         shell: bash
         run: |
           set -e
 
           cd "$ANDROID_DIR"
 
-          echo "Building Abir AI APK..."
+          echo "Starting Android APK build..."
 
           ./gradlew assembleDebug \
             --no-daemon \
@@ -225,7 +161,7 @@ jobs:
       - name: Find APK
         shell: bash
         run: |
-          echo "APK files found:"
+          echo "APK files:"
 
           find "$ANDROID_DIR" \
             -type f \
