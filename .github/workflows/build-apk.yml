@@ -25,40 +25,111 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Find project directory
+      - name: Extract project ZIP files
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking repository files..."
+          find . -maxdepth 5 -type f | head -200
+
+          echo ""
+          echo "Searching for ZIP files..."
+
+          ZIP_FOUND=false
+
+          while IFS= read -r ZIP_FILE; do
+            ZIP_FOUND=true
+
+            echo ""
+            echo "Extracting:"
+            echo "$ZIP_FILE"
+
+            unzip -o "$ZIP_FILE" -d ./extracted-project
+          done < <(find . -type f -iname "*.zip")
+
+          if [ "$ZIP_FOUND" = true ]; then
+            echo "ZIP extraction completed."
+          else
+            echo "No ZIP file found."
+          fi
+
+      - name: Find project
         shell: bash
         run: |
           set -e
 
           echo "Searching for package.json..."
 
-          PACKAGE_FILE=$(find . -type f -name "package.json" -print | head -n 1)
+          PACKAGE_FILE=$(find . \
+            -type f \
+            -name "package.json" \
+            -not -path "./.git/*" \
+            -print | head -n 1)
 
-          if [ -z "$PACKAGE_FILE" ]; then
-            echo "ERROR: package.json not found"
-            exit 1
+          if [ -n "$PACKAGE_FILE" ]; then
+            PROJECT_DIR=$(dirname "$PACKAGE_FILE")
+
+            echo "package.json found:"
+            echo "$PACKAGE_FILE"
+
+            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+            exit 0
           fi
 
-          PROJECT_DIR=$(dirname "$PACKAGE_FILE")
+          echo "package.json not found."
+          echo "Searching for Android Gradle project..."
 
-          echo "Project found:"
-          echo "$PROJECT_DIR"
+          GRADLE_FILE=$(find . \
+            -type f \
+            -name "gradlew" \
+            -not -path "./.git/*" \
+            -print | head -n 1)
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          if [ -n "$GRADLE_FILE" ]; then
+            ANDROID_DIR=$(dirname "$GRADLE_FILE")
+
+            echo "Android project found:"
+            echo "$ANDROID_DIR"
+
+            echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+
+            exit 0
+          fi
+
+          echo ""
+          echo "ERROR: Abir AI project could not be found."
+          echo ""
+          echo "Files currently available:"
+          find . -maxdepth 6 -type f | head -300
+
+          exit 1
 
       - name: Show project files
         shell: bash
         run: |
-          cd "$PROJECT_DIR"
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
 
-          echo "Current directory:"
-          pwd
+          if [ -n "$PROJECT_DIR" ]; then
+            cd "$PROJECT_DIR"
+            pwd
+            echo ""
+            ls -la
+          fi
 
-          echo ""
-          echo "Project files:"
-          ls -la
+          if [ -n "$ANDROID_DIR" ]; then
+            echo ""
+            echo "Android directory:"
+            cd "$ANDROID_DIR"
+            pwd
+            echo ""
+            ls -la
+          fi
 
       - name: Install dependencies
+        if: env.PROJECT_DIR != ''
         shell: bash
         run: |
           set -e
@@ -67,38 +138,47 @@ jobs:
 
           if [ -f pnpm-lock.yaml ]; then
             echo "Using pnpm"
+
             corepack enable
             corepack prepare pnpm@latest --activate
+
             pnpm install --frozen-lockfile
 
           elif [ -f package-lock.json ]; then
             echo "Using npm"
+
             npm ci
 
           elif [ -f yarn.lock ]; then
             echo "Using yarn"
+
             corepack enable
             yarn install --frozen-lockfile
 
-          else
-            echo "No lock file found"
+          elif [ -f package.json ]; then
+            echo "No lock file found."
+            echo "Using npm install."
+
             npm install
+
+          else
+            echo "package.json not found."
+            exit 1
           fi
 
       - name: Prepare Android project
+        if: env.PROJECT_DIR != ''
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_DIR"
 
-          echo "Checking Android project..."
-
           if [ -d "android" ]; then
-            echo "Android folder already exists"
+            echo "Android folder already exists."
           else
             echo "Android folder not found."
-            echo "Generating Android project..."
+            echo "Running Expo prebuild..."
 
             npx expo prebuild \
               --platform android \
@@ -106,8 +186,9 @@ jobs:
           fi
 
           if [ ! -f "android/gradlew" ]; then
-            echo "Gradle wrapper not found."
-            echo "Generating Android project again..."
+            echo "ERROR: android/gradlew not found."
+
+            echo "Trying Expo prebuild again..."
 
             npx expo prebuild \
               --platform android \
@@ -115,24 +196,27 @@ jobs:
           fi
 
           if [ ! -f "android/gradlew" ]; then
-            echo "ERROR: android/gradlew still not found"
+            echo "ERROR: Gradle wrapper could not be created."
             exit 1
           fi
 
-          echo "Android project is ready."
+          echo "Android project ready."
+
+          echo "ANDROID_DIR=$PROJECT_DIR/android" >> "$GITHUB_ENV"
 
       - name: Make Gradle executable
         shell: bash
         run: |
-          cd "$PROJECT_DIR/android"
-          chmod +x gradlew
+          chmod +x "$ANDROID_DIR/gradlew"
 
       - name: Build APK
         shell: bash
         run: |
           set -e
 
-          cd "$PROJECT_DIR/android"
+          cd "$ANDROID_DIR"
+
+          echo "Building Abir AI APK..."
 
           ./gradlew assembleDebug \
             --no-daemon \
@@ -141,9 +225,9 @@ jobs:
       - name: Find APK
         shell: bash
         run: |
-          echo "Searching for APK..."
+          echo "APK files found:"
 
-          find "$PROJECT_DIR/android" \
+          find "$ANDROID_DIR" \
             -type f \
             -name "*.apk" \
             -print
