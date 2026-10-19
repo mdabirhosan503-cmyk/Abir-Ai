@@ -14,14 +14,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      -- name: Setup Node.js
-  uses: actions/setup-node@v4
-  with:
-    node-version: 22 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
       - name: Find Android project
-        id: find
         shell: bash
         run: |
           set -e
@@ -38,51 +42,92 @@ jobs:
           PROJECT_DIR=$(dirname "$ANDROID_DIR")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Android project: $ANDROID_DIR"
-          echo "Project directory: $PROJECT_DIR"
+          echo "Android project found:"
+          echo "$ANDROID_DIR"
 
-      - name: Install Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
 
-      - name: Install project dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_DIR"
 
-          if [ -f package-lock.json ]; then
-            npm ci
-          elif [ -f pnpm-lock.yaml ]; then
+          echo "Installing dependencies in:"
+          pwd
+
+          if [ -f pnpm-lock.yaml ]; then
+            echo "pnpm-lock.yaml found"
             corepack enable
+            corepack prepare pnpm@latest --activate
             pnpm install --frozen-lockfile
+
+          elif [ -f package-lock.json ]; then
+            echo "package-lock.json found"
+            npm ci
+
           elif [ -f yarn.lock ]; then
+            echo "yarn.lock found"
             corepack enable
             yarn install --frozen-lockfile
+
           elif [ -f package.json ]; then
+            echo "package.json found"
             npm install
+
           else
-            echo "package.json not found in $PROJECT_DIR"
+            echo "ERROR: package.json not found"
             exit 1
           fi
 
-      - name: Make Gradle executable
-        run: chmod +x "$ANDROID_DIR/gradlew"
+      - name: Check Node.js
+        shell: bash
+        run: |
+          node --version
+          npm --version
 
-      - name: Build APK
+      - name: Check Android project
+        shell: bash
+        run: |
+          cd "$ANDROID_DIR"
+          echo "Android directory:"
+          pwd
+          echo ""
+          echo "Files:"
+          ls -la
+
+      - name: Make Gradle executable
+        shell: bash
+        run: |
+          chmod +x "$ANDROID_DIR/gradlew"
+
+      - name: Clean Gradle
+        shell: bash
+        run: |
+          cd "$ANDROID_DIR"
+          ./gradlew clean --no-daemon --stacktrace
+
+      - name: Build Debug APK
         shell: bash
         run: |
           set -e
+
           cd "$ANDROID_DIR"
-          ./gradlew assembleDebug --no-daemon --stacktrace
+
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Find APK
         shell: bash
         run: |
-          find "$ANDROID_DIR" -type f -name "*.apk" -print
+          echo "Searching for APK files..."
+          find "$ANDROID_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
