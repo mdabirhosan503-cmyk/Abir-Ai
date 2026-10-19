@@ -68,11 +68,18 @@ jobs:
           cd "$WORKSPACE_DIR"
 
           corepack enable
-          pnpm install --frozen-lockfile
+
+          pnpm --version
+
+          pnpm install \
+            --frozen-lockfile \
+            --allow-build=esbuild
 
       - name: Make Gradle executable
         shell: bash
         run: |
+          set -e
+
           chmod +x "$ANDROID_DIR/gradlew"
 
       - name: Build APK
@@ -89,6 +96,10 @@ jobs:
       - name: Find APK
         shell: bash
         run: |
+          set -e
+
+          echo "Searching for APK..."
+
           find "$ANDROID_DIR" \
             -type f \
             -name "*.apk" \
