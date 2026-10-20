@@ -29,11 +29,8 @@ jobs:
         shell: bash
         run: |
           set -e
-
           mkdir -p extracted
-
           unzip -q Bengali-Voice-Buddy.zip -d extracted
-
           echo "Project extracted successfully"
 
       - name: Set project paths
@@ -100,12 +97,35 @@ jobs:
           if grep -q "versionName" "$BUILD_FILE"; then
             echo "versionName already exists"
           else
-            echo "Adding defaultConfig with versionName..."
+            echo "Adding versionName..."
 
-            sed -i '/android[[:space:]]*{/a\
-  defaultConfig {\
-    versionName "1.0.0"\
-  }' "$BUILD_FILE"
+            python3 - "$BUILD_FILE" <<'PY'
+import sys
+
+path = sys.argv[1]
+
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+marker = "android {"
+
+if marker not in text:
+    print("ERROR: android block not found")
+    sys.exit(1)
+
+replacement = '''android {
+    defaultConfig {
+        versionName "1.0.0"
+    }
+'''
+
+text = text.replace(marker, replacement, 1)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+
+print("versionName added successfully")
+PY
           fi
 
           echo "Final launcher build.gradle:"
