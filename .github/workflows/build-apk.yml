@@ -69,7 +69,7 @@ jobs:
           cd "$WORKSPACE_DIR"
 
           corepack enable
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --allow-build=esbuild 
 
       - name: Fix Abir App Launcher version
         shell: bash
