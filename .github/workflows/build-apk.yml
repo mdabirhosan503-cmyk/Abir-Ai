@@ -31,11 +31,9 @@ jobs:
           set -e
 
           mkdir -p extracted
-
           unzip -q Bengali-Voice-Buddy.zip -d extracted
 
-          echo "Project files:"
-          find extracted -maxdepth 4 -type f | head -200
+          echo "Project extracted successfully"
 
       - name: Set project paths
         shell: bash
@@ -52,13 +50,16 @@ jobs:
           fi
 
           if [ ! -f "$ANDROID_DIR/gradlew" ]; then
-            echo "ERROR: android/gradlew not found"
+            echo "ERROR: gradlew not found"
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
           echo "WORKSPACE_DIR=$WORKSPACE_DIR" >> "$GITHUB_ENV"
+
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "ANDROID_DIR=$ANDROID_DIR"
 
       - name: Install dependencies
         shell: bash
@@ -68,18 +69,59 @@ jobs:
           cd "$WORKSPACE_DIR"
 
           corepack enable
+          pnpm install --frozen-lockfile
 
-          pnpm --version
-
-          pnpm install \
-            --frozen-lockfile \
-            --allow-build=esbuild
-
-      - name: Make Gradle executable
+      - name: Fix Abir App Launcher version
         shell: bash
         run: |
           set -e
 
+          LAUNCHER_DIR="$ANDROID_DIR/abir-app-launcher"
+
+          echo "Checking launcher directory..."
+
+          if [ ! -d "$LAUNCHER_DIR" ]; then
+            echo "ERROR: abir-app-launcher directory not found"
+            find "$ANDROID_DIR" -maxdepth 3 -type d | sort
+            exit 1
+          fi
+
+          echo "Launcher found:"
+          find "$LAUNCHER_DIR" -maxdepth 2 -type f | sort
+
+          BUILD_FILE=""
+
+          if [ -f "$LAUNCHER_DIR/build.gradle" ]; then
+            BUILD_FILE="$LAUNCHER_DIR/build.gradle"
+          elif [ -f "$LAUNCHER_DIR/build.gradle.kts" ]; then
+            BUILD_FILE="$LAUNCHER_DIR/build.gradle.kts"
+          fi
+
+          if [ -z "$BUILD_FILE" ]; then
+            echo "ERROR: launcher build.gradle not found"
+            exit 1
+          fi
+
+          echo "Using: $BUILD_FILE"
+
+          if grep -q "versionName" "$BUILD_FILE"; then
+            echo "versionName already exists"
+          else
+            echo "Adding versionName..."
+
+            if [[ "$BUILD_FILE" == *.gradle.kts ]]; then
+              sed -i '/defaultConfig[[:space:]]*{/a\        versionName = "1.0.0"' "$BUILD_FILE"
+            else
+              sed -i '/defaultConfig[[:space:]]*{/a\        versionName "1.0.0"' "$BUILD_FILE"
+            fi
+          fi
+
+          echo "Final launcher build file:"
+          cat "$BUILD_FILE"
+
+      - name: Make Gradle executable
+        shell: bash
+        run: |
           chmod +x "$ANDROID_DIR/gradlew"
 
       - name: Build APK
@@ -96,8 +138,6 @@ jobs:
       - name: Find APK
         shell: bash
         run: |
-          set -e
-
           echo "Searching for APK..."
 
           find "$ANDROID_DIR" \
