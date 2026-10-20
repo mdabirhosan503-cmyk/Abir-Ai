@@ -29,8 +29,10 @@ jobs:
         shell: bash
         run: |
           set -e
+
           mkdir -p extracted
           unzip -q Bengali-Voice-Buddy.zip -d extracted
+
           echo "Project extracted successfully"
 
       - name: Set project paths
@@ -91,7 +93,7 @@ jobs:
             exit 1
           fi
 
-          echo "Launcher build file:"
+          echo "Launcher build.gradle before fix:"
           cat "$BUILD_FILE"
 
           if grep -q "versionName" "$BUILD_FILE"; then
@@ -113,11 +115,11 @@ if marker not in text:
     print("ERROR: android block not found")
     sys.exit(1)
 
-replacement = '''android {
+replacement = """android {
     defaultConfig {
         versionName "1.0.0"
     }
-'''
+"""
 
 text = text.replace(marker, replacement, 1)
 
@@ -126,9 +128,10 @@ with open(path, "w", encoding="utf-8") as f:
 
 print("versionName added successfully")
 PY
+
           fi
 
-          echo "Final launcher build.gradle:"
+          echo "Launcher build.gradle after fix:"
           cat "$BUILD_FILE"
 
       - name: Make Gradle executable
