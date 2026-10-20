@@ -42,8 +42,10 @@ jobs:
         shell: bash
         run: |
           set -e
+
           corepack enable
           corepack prepare pnpm@12.14.0 --activate
+
           pnpm --version
 
       - name: Install dependencies
@@ -51,6 +53,7 @@ jobs:
         working-directory: extracted/Bengali-Voice-Buddy
         run: |
           set -e
+
           pnpm install --frozen-lockfile --allow-build=esbuild
 
       - name: Check Android project
@@ -89,13 +92,13 @@ jobs:
           if grep -q "versionName" "$BUILD_FILE"; then
             echo "versionName already exists"
           else
-            sed -i '/namespace "expo.modules.abirapp"/a\
-  defaultConfig {\
-    versionName "1.0.0"\
-  }' "$BUILD_FILE"
+            perl -0pi -e 's/(namespace\s+"expo\.modules\.abirapp"\s*\n)/$1\n  defaultConfig {\n    versionName "1.0.0"\n  }\n/' "$BUILD_FILE"
 
             echo "versionName added"
           fi
+
+          echo "Final launcher build.gradle:"
+          cat "$BUILD_FILE"
 
       - name: Make Gradle executable
         shell: bash
@@ -125,6 +128,7 @@ jobs:
             exit 1
           fi
 
+          echo "APK files:"
           find "$APK_DIR" -type f -name "*.apk" -print
 
       - name: Upload APK
