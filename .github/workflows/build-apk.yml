@@ -14,12 +14,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find and extract project ZIP
+      - name: Extract project ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: ZIP file not found"
@@ -71,7 +71,7 @@ jobs:
 
           echo "Android project found"
 
-      - name: Fix abir-app-launcher versionName
+      - name: Fix launcher version
         shell: bash
         working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
         run: |
@@ -80,37 +80,21 @@ jobs:
           BUILD_FILE="modules/abir-app-launcher/android/build.gradle"
 
           if [ ! -f "$BUILD_FILE" ]; then
-            echo "ERROR: $BUILD_FILE not found"
+            echo "ERROR: Launcher build.gradle not found"
             exit 1
           fi
 
-          echo "Found launcher build.gradle"
+          echo "Launcher build.gradle found"
 
           if grep -q "versionName" "$BUILD_FILE"; then
             echo "versionName already exists"
           else
-            python3 - "$BUILD_FILE" <<'PY'
-import sys
+            sed -i '/namespace "expo.modules.abirapp"/a\
+  defaultConfig {\
+    versionName "1.0.0"\
+  }' "$BUILD_FILE"
 
-path = sys.argv[1]
-
-with open(path, "r", encoding="utf-8") as f:
-    text = f.read()
-
-marker = 'namespace "expo.modules.abirapp"'
-
-if marker not in text:
-    raise SystemExit("ERROR: namespace marker not found")
-
-replacement = marker + '\n\n  defaultConfig {\n    versionName "1.0.0"\n  }'
-
-text = text.replace(marker, replacement, 1)
-
-with open(path, "w", encoding="utf-8") as f:
-    f.write(text)
-
-print("versionName added successfully")
-PY
+            echo "versionName added"
           fi
 
       - name: Make Gradle executable
@@ -129,23 +113,19 @@ PY
             --no-daemon \
             --stacktrace
 
-      - name: Find APK
+      - name: Check APK
         shell: bash
         run: |
           set -e
 
-          APK=$(find extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android/app/build/outputs/apk/debug \
-            -type f \
-            -name "*.apk" \
-            -print -quit)
+          APK_DIR="extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android/app/build/outputs/apk/debug"
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK was not created"
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: APK output directory not found"
             exit 1
           fi
 
-          echo "APK created:"
-          echo "$APK"
+          find "$APK_DIR" -type f -name "*.apk" -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
