@@ -46,6 +46,7 @@ jobs:
           corepack enable
           corepack prepare pnpm@12.14.0 --activate
 
+          echo "pnpm version:"
           pnpm --version
 
       - name: Install dependencies
@@ -74,7 +75,7 @@ jobs:
 
           echo "Android project found"
 
-      - name: Fix launcher version
+      - name: Fix launcher Gradle version
         shell: bash
         working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
         run: |
@@ -100,6 +101,39 @@ jobs:
           echo "Final launcher build.gradle:"
           cat "$BUILD_FILE"
 
+      - name: Fix launcher Kotlin Contacts code
+        shell: bash
+        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
+        run: |
+          set -e
+
+          KOTLIN_FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
+
+          if [ ! -f "$KOTLIN_FILE" ]; then
+            echo "ERROR: Kotlin launcher file not found"
+            exit 1
+          fi
+
+          echo "Fixing Contacts Kotlin code..."
+
+          sed -i '/val phone = ContactsContract.CommonDataKinds.Phone/d' "$KOTLIN_FILE"
+
+          sed -i 's/\bphone\.CONTACT_ID\b/ContactsContract.CommonDataKinds.Phone.CONTACT_ID/g' "$KOTLIN_FILE"
+          sed -i 's/\bphone\.DISPLAY_NAME\b/ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME/g' "$KOTLIN_FILE"
+          sed -i 's/\bphone\.NUMBER\b/ContactsContract.CommonDataKinds.Phone.NUMBER/g' "$KOTLIN_FILE"
+          sed -i 's/\bphone\.TYPE\b/ContactsContract.CommonDataKinds.Phone.TYPE/g' "$KOTLIN_FILE"
+          sed -i 's/\bphone\.LABEL\b/ContactsContract.CommonDataKinds.Phone.LABEL/g' "$KOTLIN_FILE"
+          sed -i 's/\bphone\.CONTENT_URI\b/ContactsContract.CommonDataKinds.Phone.CONTENT_URI/g' "$KOTLIN_FILE"
+          sed -i 's/\bphone\.getTypeLabel\b/ContactsContract.CommonDataKinds.Phone.getTypeLabel/g' "$KOTLIN_FILE"
+
+          echo "Contacts Kotlin code fixed."
+
+          echo "Checking remaining phone references:"
+          grep -n "phone\." "$KOTLIN_FILE" || true
+
+          echo "Relevant Kotlin code:"
+          sed -n '60,115p' "$KOTLIN_FILE"
+
       - name: Make Gradle executable
         shell: bash
         working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
@@ -109,6 +143,8 @@ jobs:
       - name: Build APK
         shell: bash
         working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
+        env:
+          NODE_ENV: production
         run: |
           set -e
 
@@ -130,6 +166,15 @@ jobs:
 
           echo "APK files:"
           find "$APK_DIR" -type f -name "*.apk" -print
+
+          APK_COUNT=$(find "$APK_DIR" -type f -name "*.apk" | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERROR: No APK was generated"
+            exit 1
+          fi
+
+          echo "APK generated successfully!"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
