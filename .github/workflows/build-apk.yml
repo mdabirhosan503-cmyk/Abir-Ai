@@ -31,8 +31,7 @@ jobs:
           mkdir -p extracted
           unzip -q "$ZIP_FILE" -d extracted
 
-          echo "Extracted project:"
-          find extracted -maxdepth 4 -type d | head -80
+          echo "Project extracted successfully"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -54,6 +53,24 @@ jobs:
           set -e
           pnpm install --frozen-lockfile --allow-build=esbuild
 
+      - name: Check Android project
+        shell: bash
+        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
+        run: |
+          set -e
+
+          if [ ! -d "android" ]; then
+            echo "ERROR: Android project not found"
+            exit 1
+          fi
+
+          if [ ! -f "android/gradlew" ]; then
+            echo "ERROR: gradlew not found"
+            exit 1
+          fi
+
+          echo "Android project found"
+
       - name: Fix abir-app-launcher versionName
         shell: bash
         working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
@@ -62,22 +79,39 @@ jobs:
 
           BUILD_FILE="modules/abir-app-launcher/android/build.gradle"
 
-          echo "Checking: $BUILD_FILE"
-
           if [ ! -f "$BUILD_FILE" ]; then
             echo "ERROR: $BUILD_FILE not found"
             exit 1
           fi
 
-          if grep -q 'versionName' "$BUILD_FILE"; then
+          echo "Found launcher build.gradle"
+
+          if grep -q "versionName" "$BUILD_FILE"; then
             echo "versionName already exists"
           else
-            sed -i '/namespace "expo.modules.abirapp"/a\  defaultConfig { versionName "1.0.0" }' "$BUILD_FILE"
-            echo "Added versionName"
-          fi
+            python3 - "$BUILD_FILE" <<'PY'
+import sys
 
-          echo "Final build.gradle:"
-          cat "$BUILD_FILE"
+path = sys.argv[1]
+
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+marker = 'namespace "expo.modules.abirapp"'
+
+if marker not in text:
+    raise SystemExit("ERROR: namespace marker not found")
+
+replacement = marker + '\n\n  defaultConfig {\n    versionName "1.0.0"\n  }'
+
+text = text.replace(marker, replacement, 1)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+
+print("versionName added successfully")
+PY
+          fi
 
       - name: Make Gradle executable
         shell: bash
@@ -90,19 +124,28 @@ jobs:
         working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
         run: |
           set -e
-          ./gradlew assembleDebug --no-daemon --stacktrace
+
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Find APK
         shell: bash
         run: |
           set -e
 
-          echo "Searching for APK..."
-
-          find extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android \
+          APK=$(find extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android/app/build/outputs/apk/debug \
             -type f \
             -name "*.apk" \
-            -print
+            -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not created"
+            exit 1
+          fi
+
+          echo "APK created:"
+          echo "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
