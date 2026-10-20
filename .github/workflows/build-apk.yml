@@ -11,226 +11,102 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Find and extract project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: ZIP file not found"
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          echo "Extracted project:"
+          find extracted -maxdepth 4 -type d | head -80
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Extract project
+      - name: Setup pnpm
         shell: bash
         run: |
           set -e
-
-          echo "Extracting Bengali-Voice-Buddy.zip..."
-
-          mkdir -p extracted
-
-          unzip -q Bengali-Voice-Buddy.zip -d extracted
-
-          echo "Extraction completed."
-
-      - name: Set project paths
-        shell: bash
-        run: |
-          set -e
-
-          PROJECT_DIR="extracted/Bengali-Voice-Buddy/artifacts/abir-ai"
-          ANDROID_DIR="$PROJECT_DIR/android"
-          WORKSPACE_DIR="extracted/Bengali-Voice-Buddy"
-          LAUNCHER_DIR="$PROJECT_DIR/modules/abir-app-launcher/android"
-
-          echo "Checking project..."
-
-          if [ ! -f "$PROJECT_DIR/package.json" ]; then
-            echo "ERROR: package.json not found"
-            exit 1
-          fi
-
-          if [ ! -f "$ANDROID_DIR/gradlew" ]; then
-            echo "ERROR: gradlew not found"
-            exit 1
-          fi
-
-          if [ ! -d "$LAUNCHER_DIR" ]; then
-            echo "ERROR: abir-app-launcher Android module not found"
-            echo ""
-            echo "Available directories:"
-            find "$PROJECT_DIR" -maxdepth 6 -type d | sort
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-          echo "WORKSPACE_DIR=$WORKSPACE_DIR" >> "$GITHUB_ENV"
-          echo "LAUNCHER_DIR=$LAUNCHER_DIR" >> "$GITHUB_ENV"
-
-          echo ""
-          echo "Project:"
-          echo "$PROJECT_DIR"
-
-          echo ""
-          echo "Android:"
-          echo "$ANDROID_DIR"
-
-          echo ""
-          echo "Launcher:"
-          echo "$LAUNCHER_DIR"
+          corepack enable
+          corepack prepare pnpm@12.14.0 --activate
+          pnpm --version
 
       - name: Install dependencies
         shell: bash
+        working-directory: extracted/Bengali-Voice-Buddy
         run: |
           set -e
-
-          cd "$WORKSPACE_DIR"
-
-          echo "Enabling Corepack..."
-
-          corepack enable
-
-          echo "Installing pnpm dependencies..."
-
           pnpm install --frozen-lockfile --allow-build=esbuild
 
-          echo "Dependencies installed successfully."
-
-      - name: Check launcher Gradle file
+      - name: Fix abir-app-launcher versionName
         shell: bash
+        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
         run: |
           set -e
 
-          BUILD_FILE="$LAUNCHER_DIR/build.gradle"
+          BUILD_FILE="modules/abir-app-launcher/android/build.gradle"
+
+          echo "Checking: $BUILD_FILE"
 
           if [ ! -f "$BUILD_FILE" ]; then
-            echo "ERROR: build.gradle not found"
+            echo "ERROR: $BUILD_FILE not found"
             exit 1
           fi
 
-          echo "Launcher build.gradle found."
-
-          echo ""
-          echo "===== launcher build.gradle ====="
-
-          cat "$BUILD_FILE"
-
-          echo ""
-          echo "===== end build.gradle ====="
-
-      - name: Add launcher versionName
-        shell: bash
-        run: |
-          set -e
-
-          BUILD_FILE="$LAUNCHER_DIR/build.gradle"
-
-          echo "Checking versionName..."
-
-          if grep -q "versionName" "$BUILD_FILE"; then
-            echo "versionName already exists."
+          if grep -q 'versionName' "$BUILD_FILE"; then
+            echo "versionName already exists"
           else
-            echo "versionName is missing."
-
-            echo "Adding defaultConfig to launcher..."
-
-            printf '%s\n' \
-              'android {' \
-              '    defaultConfig {' \
-              '        versionName "1.0.0"' \
-              '    }' \
-              '}' \
-              > "$BUILD_FILE"
-
-            echo "Launcher build.gradle updated."
-
-            echo ""
-            echo "===== updated build.gradle ====="
-
-            cat "$BUILD_FILE"
-
-            echo ""
-            echo "===== end updated build.gradle ====="
+            sed -i '/namespace "expo.modules.abirapp"/a\  defaultConfig { versionName "1.0.0" }' "$BUILD_FILE"
+            echo "Added versionName"
           fi
+
+          echo "Final build.gradle:"
+          cat "$BUILD_FILE"
 
       - name: Make Gradle executable
         shell: bash
+        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
         run: |
-          set -e
-
-          chmod +x "$ANDROID_DIR/gradlew"
-
-          echo "Gradle is executable."
-
-      - name: Clean Android project
-        shell: bash
-        run: |
-          set -e
-
-          cd "$ANDROID_DIR"
-
-          echo "Running Gradle clean..."
-
-          ./gradlew clean \
-            --no-daemon
+          chmod +x gradlew
 
       - name: Build APK
         shell: bash
+        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
         run: |
           set -e
-
-          cd "$ANDROID_DIR"
-
-          echo "Starting APK build..."
-
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace
-
-          echo "APK build completed."
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Find APK
         shell: bash
         run: |
           set -e
 
-          echo "Searching for APK files..."
+          echo "Searching for APK..."
 
-          find "$ANDROID_DIR" \
+          find extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android \
             -type f \
             -name "*.apk" \
             -print
 
-      - name: Verify APK exists
-        shell: bash
-        run: |
-          set -e
-
-          APK_COUNT=$(find "$ANDROID_DIR" \
-            -type f \
-            -name "*.apk" | wc -l)
-
-          echo "APK count: $APK_COUNT"
-
-          if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No APK was generated."
-            exit 1
-          fi
-
-          echo "APK successfully generated."
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-APK
-          path: |
-            **/build/outputs/apk/**/*.apk
-            **/build/outputs/apk/*.apk
+          name: Abir-AI-debug-apk
+          path: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
