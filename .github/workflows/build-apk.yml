@@ -10,6 +10,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      NODE_ENV: production
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,19 +22,22 @@ jobs:
         run: |
           set -e
 
-          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" -print -quit)
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: ZIP file not found"
+            echo "No project ZIP found."
             exit 1
           fi
 
           echo "Using ZIP: $ZIP_FILE"
 
+          rm -rf extracted
           mkdir -p extracted
+
           unzip -q "$ZIP_FILE" -d extracted
 
-          echo "Project extracted successfully"
+          echo "Extracted files:"
+          find extracted -maxdepth 4 -type f -name "package.json" -o -name "settings.gradle" | head -50
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -39,146 +45,166 @@ jobs:
           node-version: 20
 
       - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+
+      - name: Find project
         shell: bash
         run: |
           set -e
 
-          corepack enable
-          corepack prepare pnpm@12.14.0 --activate
+          PROJECT_DIR=$(find extracted -type f -name "package.json" \
+            -path "*/artifacts/abir-ai/package.json" \
+            -print -quit | xargs -r dirname)
 
-          echo "pnpm version:"
-          pnpm --version
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR=$(find extracted -type f -name "package.json" -print -quit | xargs -r dirname)
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Could not find package.json"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project: $PROJECT_DIR"
 
       - name: Install dependencies
-        shell: bash
-        working-directory: extracted/Bengali-Voice-Buddy
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -e
-
           pnpm install --frozen-lockfile --allow-build=esbuild
 
       - name: Check Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
-        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
         run: |
           set -e
-
-          if [ ! -d "android" ]; then
-            echo "ERROR: Android project not found"
-            exit 1
-          fi
 
           if [ ! -f "android/gradlew" ]; then
-            echo "ERROR: gradlew not found"
+            echo "Android Gradle project not found."
             exit 1
           fi
 
-          echo "Android project found"
+          chmod +x android/gradlew
 
-      - name: Fix launcher Gradle version
+          echo "Android project found."
+          ls -la android
+
+      - name: Fix launcher versionName
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
-        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
         run: |
           set -e
 
-          BUILD_FILE="modules/abir-app-launcher/android/build.gradle"
+          FILE="modules/abir-app-launcher/android/build.gradle"
 
-          if [ ! -f "$BUILD_FILE" ]; then
-            echo "ERROR: Launcher build.gradle not found"
+          if [ ! -f "$FILE" ]; then
+            echo "Launcher build.gradle not found:"
+            echo "$FILE"
             exit 1
           fi
 
-          echo "Launcher build.gradle found"
+          if ! grep -q "versionName" "$FILE"; then
+            python3 - <<'PY'
+          from pathlib import Path
 
-          if grep -q "versionName" "$BUILD_FILE"; then
-            echo "versionName already exists"
-          else
-            perl -0pi -e 's/(namespace\s+"expo\.modules\.abirapp"\s*\n)/$1\n  defaultConfig {\n    versionName "1.0.0"\n  }\n/' "$BUILD_FILE"
+          p = Path("modules/abir-app-launcher/android/build.gradle")
+          text = p.read_text()
 
-            echo "versionName added"
+          marker = "defaultConfig {"
+
+          if marker in text:
+              text = text.replace(
+                  marker,
+                  marker + '\n        versionName "1.0.0"',
+                  1
+              )
+          else:
+              text = text.replace(
+                  "android {",
+                  'android {\n    defaultConfig {\n        versionName "1.0.0"\n    }',
+                  1
+              )
+
+          p.write_text(text)
+          PY
           fi
 
-          echo "Final launcher build.gradle:"
-          cat "$BUILD_FILE"
+          echo "Launcher versionName check complete."
 
       - name: Fix launcher Kotlin Contacts code
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
-        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai
         run: |
           set -e
 
           KOTLIN_FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
 
           if [ ! -f "$KOTLIN_FILE" ]; then
-            echo "ERROR: Kotlin launcher file not found"
+            echo "Kotlin file not found:"
+            echo "$KOTLIN_FILE"
             exit 1
           fi
 
-          echo "Fixing Contacts Kotlin code..."
+          python3 - <<'PY'
+          from pathlib import Path
 
-          sed -i '/val phone = ContactsContract.CommonDataKinds.Phone/d' "$KOTLIN_FILE"
+          p = Path("modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt")
+          text = p.read_text()
 
-          sed -i 's/\bphone\.CONTACT_ID\b/ContactsContract.CommonDataKinds.Phone.CONTACT_ID/g' "$KOTLIN_FILE"
-          sed -i 's/\bphone\.DISPLAY_NAME\b/ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME/g' "$KOTLIN_FILE"
-          sed -i 's/\bphone\.NUMBER\b/ContactsContract.CommonDataKinds.Phone.NUMBER/g' "$KOTLIN_FILE"
-          sed -i 's/\bphone\.TYPE\b/ContactsContract.CommonDataKinds.Phone.TYPE/g' "$KOTLIN_FILE"
-          sed -i 's/\bphone\.LABEL\b/ContactsContract.CommonDataKinds.Phone.LABEL/g' "$KOTLIN_FILE"
-          sed -i 's/\bphone\.CONTENT_URI\b/ContactsContract.CommonDataKinds.Phone.CONTENT_URI/g' "$KOTLIN_FILE"
-          sed -i 's/\bphone\.getTypeLabel\b/ContactsContract.CommonDataKinds.Phone.getTypeLabel/g' "$KOTLIN_FILE"
+          text = text.replace(
+              '  val phone = ContactsContract.CommonDataKinds.Phone\n',
+              ''
+          )
 
-          echo "Contacts Kotlin code fixed."
+          replacements = {
+              'phone.CONTACT_ID': 'ContactsContract.CommonDataKinds.Phone.CONTACT_ID',
+              'phone.DISPLAY_NAME': 'ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME',
+              'phone.NUMBER': 'ContactsContract.CommonDataKinds.Phone.NUMBER',
+              'phone.TYPE': 'ContactsContract.CommonDataKinds.Phone.TYPE',
+              'phone.LABEL': 'ContactsContract.CommonDataKinds.Phone.LABEL',
+              'phone.CONTENT_URI': 'ContactsContract.CommonDataKinds.Phone.CONTENT_URI',
+              'phone.getTypeLabel': 'ContactsContract.CommonDataKinds.Phone.getTypeLabel',
+          }
 
-          echo "Checking remaining phone references:"
-          grep -n "phone\." "$KOTLIN_FILE" || true
+          for old, new in replacements.items():
+              text = text.replace(old, new)
 
-          echo "Relevant Kotlin code:"
-          sed -n '60,115p' "$KOTLIN_FILE"
+          p.write_text(text)
+          PY
 
-      - name: Make Gradle executable
-        shell: bash
-        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
+          echo "Contacts Kotlin fix complete."
+
+      - name: Build Release APK
+        working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
           chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Build APK
-        shell: bash
-        working-directory: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android
-        env:
-          NODE_ENV: production
-        run: |
-          set -e
-
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace
-
-      - name: Check APK
+      - name: Find Release APK
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          APK_DIR="extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android/app/build/outputs/apk/debug"
+          echo "Searching for release APK..."
 
-          if [ ! -d "$APK_DIR" ]; then
-            echo "ERROR: APK output directory not found"
+          find android -type f -name "*.apk" -print
+
+          APK=$(find android -type f -name "*release*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "Release APK not found."
             exit 1
           fi
 
-          echo "APK files:"
-          find "$APK_DIR" -type f -name "*.apk" -print
+          echo "Found APK: $APK"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
-          APK_COUNT=$(find "$APK_DIR" -type f -name "*.apk" | wc -l)
-
-          if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No APK was generated"
-            exit 1
-          fi
-
-          echo "APK generated successfully!"
-
-      - name: Upload APK
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-debug-apk
-          path: extracted/Bengali-Voice-Buddy/artifacts/abir-ai/android/app/build/outputs/apk/debug/*.apk
+          name: Abir-AI-release-apk
+          path: ${{ env.PROJECT_DIR }}/${{ env.APK_PATH }}
           if-no-files-found: error
