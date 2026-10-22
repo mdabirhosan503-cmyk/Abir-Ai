@@ -22,7 +22,7 @@ jobs:
         run: |
           set -e
 
-          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "Bengali-Voice-Buddy-AbirAI-2.7.0.zip" -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
             echo "No project ZIP found."
@@ -36,8 +36,8 @@ jobs:
 
           unzip -q "$ZIP_FILE" -d extracted
 
-          echo "Extracted files:"
-          find extracted -maxdepth 4 -type f -name "package.json" -o -name "settings.gradle" | head -50
+          echo "Extracted project files:"
+          find extracted -maxdepth 5 -type f \( -name "package.json" -o -name "settings.gradle" \) | head -50
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -59,7 +59,8 @@ jobs:
             -print -quit | xargs -r dirname)
 
           if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR=$(find extracted -type f -name "package.json" -print -quit | xargs -r dirname)
+            PROJECT_DIR=$(find extracted -type f -name "package.json" \
+              -print -quit | xargs -r dirname)
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
@@ -68,12 +69,21 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project: $PROJECT_DIR"
+
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
 
       - name: Install dependencies
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          pnpm install --frozen-lockfile --allow-build=esbuild
+          set -e
+
+          echo "Installing dependencies..."
+
+          pnpm install --no-frozen-lockfile --allow-build=esbuild
+
+          echo "Dependencies installed successfully."
 
       - name: Check Android project
         working-directory: ${{ env.PROJECT_DIR }}
@@ -150,7 +160,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt")
+          p = Path(
+              "modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
+          )
+
           text = p.read_text()
 
           text = text.replace(
@@ -159,13 +172,26 @@ jobs:
           )
 
           replacements = {
-              'phone.CONTACT_ID': 'ContactsContract.CommonDataKinds.Phone.CONTACT_ID',
-              'phone.DISPLAY_NAME': 'ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME',
-              'phone.NUMBER': 'ContactsContract.CommonDataKinds.Phone.NUMBER',
-              'phone.TYPE': 'ContactsContract.CommonDataKinds.Phone.TYPE',
-              'phone.LABEL': 'ContactsContract.CommonDataKinds.Phone.LABEL',
-              'phone.CONTENT_URI': 'ContactsContract.CommonDataKinds.Phone.CONTENT_URI',
-              'phone.getTypeLabel': 'ContactsContract.CommonDataKinds.Phone.getTypeLabel',
+              'phone.CONTACT_ID':
+                  'ContactsContract.CommonDataKinds.Phone.CONTACT_ID',
+
+              'phone.DISPLAY_NAME':
+                  'ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME',
+
+              'phone.NUMBER':
+                  'ContactsContract.CommonDataKinds.Phone.NUMBER',
+
+              'phone.TYPE':
+                  'ContactsContract.CommonDataKinds.Phone.TYPE',
+
+              'phone.LABEL':
+                  'ContactsContract.CommonDataKinds.Phone.LABEL',
+
+              'phone.CONTENT_URI':
+                  'ContactsContract.CommonDataKinds.Phone.CONTENT_URI',
+
+              'phone.getTypeLabel':
+                  'ContactsContract.CommonDataKinds.Phone.getTypeLabel',
           }
 
           for old, new in replacements.items():
@@ -181,9 +207,17 @@ jobs:
         env:
           EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EXPO_PUBLIC_GEMINI_MODEL: gemini-2.5-flash
+        shell: bash
         run: |
+          set -e
+
           chmod +x gradlew
+
+          echo "Starting Release APK build..."
+
           ./gradlew assembleRelease --no-daemon --stacktrace
+
+          echo "Release APK build completed."
 
       - name: Find Release APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -202,7 +236,9 @@ jobs:
             exit 1
           fi
 
-          echo "Found APK: $APK"
+          echo "Found APK:"
+          echo "$APK"
+
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
       - name: Upload Release APK
@@ -211,5 +247,3 @@ jobs:
           name: Abir-AI-release-apk
           path: ${{ env.PROJECT_DIR }}/${{ env.APK_PATH }}
           if-no-files-found: error
-
-          
