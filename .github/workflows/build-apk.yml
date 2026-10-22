@@ -11,28 +11,47 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ==========================================
+      # 1. Checkout
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # ==========================================
+      # 2. Java 17
+      # ==========================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+
+      # ==========================================
+      # 3. Extract Abir AI ZIP
+      # ==========================================
       - name: Extract Abir AI ZIP
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Searching for Abir AI ZIP..."
+          echo "=========================================="
 
           ZIP_FILE=$(find . -maxdepth 1 -type f \
             -name "Bengali-Voice-Buddy-AbirAI-2.9.0-Final.zip" \
             -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
+            echo ""
             echo "ERROR: Abir AI ZIP NOT FOUND"
-            echo "Expected:"
+            echo ""
+            echo "Expected file:"
             echo "Bengali-Voice-Buddy-AbirAI-2.9.0-Final.zip"
+            echo ""
             echo "Files in repository:"
             ls -lah
             exit 1
@@ -42,25 +61,42 @@ jobs:
           echo "$ZIP_FILE"
 
           mkdir -p extracted
+
           unzip -q "$ZIP_FILE" -d extracted
 
           echo "Extraction completed."
 
+
+      # ==========================================
+      # 4. Node.js
+      # ==========================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
+
+      # ==========================================
+      # 5. pnpm
+      # ==========================================
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 12.14.0
           run_install: false
 
+
+      # ==========================================
+      # 6. Find Abir AI project
+      # ==========================================
       - name: Find Abir AI project
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Searching for Abir AI project..."
+          echo "=========================================="
 
           PROJECT=$(find extracted \
             -type f \
@@ -68,7 +104,9 @@ jobs:
             -print -quit)
 
           if [ -z "$PROJECT" ]; then
+            echo ""
             echo "ERROR: Abir AI project not found"
+            echo ""
             echo "Available package.json files:"
             find extracted -type f -name package.json
             exit 1
@@ -78,18 +116,33 @@ jobs:
 
           echo "PROJECT=$PROJECT_DIR" >> "$GITHUB_ENV"
 
+          echo ""
           echo "Abir AI project found:"
           echo "$PROJECT_DIR"
 
+
+      # ==========================================
+      # 7. Install dependencies
+      # ==========================================
       - name: Install dependencies
         working-directory: ${{ env.PROJECT }}
         run: |
           set -e
 
+          echo "=========================================="
+          echo "Installing dependencies..."
+          echo "=========================================="
+
           pnpm install \
             --no-frozen-lockfile \
             --allow-build=esbuild
 
+          echo "Dependencies installed."
+
+
+      # ==========================================
+      # 8. Check Android project
+      # ==========================================
       - name: Check Android project
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -105,42 +158,97 @@ jobs:
 
           echo "Android Gradle project found."
 
-      - name: Fix Android version
+
+      # ==========================================
+      # 9. Fix versionName in ALL Android modules
+      # ==========================================
+      - name: Fix Android versionName
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          FILE="android/app/build.gradle"
-
-          if [ ! -f "$FILE" ]; then
-            echo "WARNING: $FILE not found."
-            exit 0
-          fi
+          echo "=========================================="
+          echo "Checking Android versionName..."
+          echo "=========================================="
 
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("android/app/build.gradle")
-          s = p.read_text()
+          root = Path("android")
 
-          if "versionName" not in s:
-              s = s.replace(
-                  "defaultConfig {",
-                  'defaultConfig {\n        versionName "2.9.0"',
-                  1
-              )
+          files = list(root.rglob("build.gradle")) + \
+                  list(root.rglob("build.gradle.kts"))
 
-          p.write_text(s)
+          print("Found Gradle files:", len(files))
 
-          print("Android version check completed.")
+          for p in files:
+
+              try:
+                  s = p.read_text()
+              except Exception as e:
+                  print(f"Could not read {p}: {e}")
+                  continue
+
+              # Only modify files that contain defaultConfig
+              if "defaultConfig" not in s:
+                  print(f"SKIP: {p}")
+                  continue
+
+              # If versionName already exists, leave it alone
+              if "versionName" in s:
+                  print(f"OK: {p}")
+                  continue
+
+              # Groovy Gradle
+              if p.name == "build.gradle":
+
+                  marker = "defaultConfig {"
+
+                  if marker in s:
+                      s = s.replace(
+                          marker,
+                          'defaultConfig {\n        versionName "2.9.0"',
+                          1
+                      )
+
+                      p.write_text(s)
+
+                      print(f"FIXED: {p}")
+
+              # Kotlin Gradle
+              elif p.name == "build.gradle.kts":
+
+                  marker = "defaultConfig {"
+
+                  if marker in s:
+                      s = s.replace(
+                          marker,
+                          'defaultConfig {\n        versionName = "2.9.0"',
+                          1
+                      )
+
+                      p.write_text(s)
+
+                      print(f"FIXED: {p}")
+
+          print("")
+          print("Android versionName check completed.")
           PY
 
+
+      # ==========================================
+      # 10. Fix Accessibility Service
+      # ==========================================
       - name: Fix Accessibility Service
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Checking Accessibility Service..."
+          echo "=========================================="
 
           FILE=$(find . \
             -type f \
@@ -149,6 +257,7 @@ jobs:
 
           if [ -z "$FILE" ]; then
             echo "Accessibility service file not found."
+            echo "Continuing..."
             exit 0
           fi
 
@@ -160,9 +269,12 @@ jobs:
           import sys
 
           p = Path(sys.argv[1])
+
           s = p.read_text()
 
+          # Ensure AccessibilityEvent import exists
           if "import android.view.accessibility.AccessibilityEvent" not in s:
+
               marker = "import android.view.accessibility.AccessibilityNodeInfo"
 
               if marker in s:
@@ -172,12 +284,19 @@ jobs:
                       + marker
                   )
 
+          # Replace problematic constants with integer values
           replacements = {
+
               "AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED": "16",
+
               "AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED": "32",
+
               "AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED": "2048",
+
               "AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED": "16",
+
               "AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED": "32",
+
               "AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED": "2048",
           }
 
@@ -189,11 +308,19 @@ jobs:
           print("Accessibility Service fix completed.")
           PY
 
+
+      # ==========================================
+      # 11. Fix Contacts Kotlin compatibility
+      # ==========================================
       - name: Fix Contacts Kotlin compatibility
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Checking Contacts module..."
+          echo "=========================================="
 
           FILE=$(find . \
             -type f \
@@ -202,10 +329,11 @@ jobs:
 
           if [ -z "$FILE" ]; then
             echo "Contacts module not found."
+            echo "Continuing..."
             exit 0
           fi
 
-          echo "Checking Contacts module:"
+          echo "Contacts module:"
           echo "$FILE"
 
           python3 - "$FILE" <<'PY'
@@ -213,6 +341,7 @@ jobs:
           import sys
 
           p = Path(sys.argv[1])
+
           s = p.read_text()
 
           s = s.replace(
@@ -230,16 +359,69 @@ jobs:
           print("Contacts Kotlin compatibility check completed.")
           PY
 
+
+      # ==========================================
+      # 12. Show important project information
+      # ==========================================
+      - name: Verify project
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Project verification"
+          echo "=========================================="
+
+          echo "Project:"
+          pwd
+
+          echo ""
+          echo "Android directory:"
+          ls -lah android
+
+          echo ""
+          echo "Gradle wrapper:"
+          ls -lh android/gradlew
+
+          echo ""
+          echo "Accessibility files:"
+          find . -name "AbirAccessibilityService.kt" -print
+
+          echo ""
+          echo "Launcher files:"
+          find . -name "AbirAppLauncherModule.kt" -print
+
+
+      # ==========================================
+      # 13. Verify Gradle
+      # ==========================================
       - name: Verify Gradle
         working-directory: ${{ env.PROJECT }}/android
         run: |
+          set -e
+
           ./gradlew --version
 
+
+      # ==========================================
+      # 14. Clean Android build
+      # ==========================================
       - name: Clean Android build
         working-directory: ${{ env.PROJECT }}/android
         run: |
+          set -e
+
+          echo "=========================================="
+          echo "Cleaning Android build..."
+          echo "=========================================="
+
           ./gradlew clean --no-daemon
 
+
+      # ==========================================
+      # 15. Build Release APK
+      # ==========================================
       - name: Build Release APK
         working-directory: ${{ env.PROJECT }}/android
         env:
@@ -249,18 +431,27 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "Building Abir AI 2.9.0 Release APK"
+          echo "BUILDING ABIR AI 2.9.0"
           echo "=========================================="
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --warning-mode all
 
+
+      # ==========================================
+      # 16. Find APK
+      # ==========================================
       - name: Find Release APK
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Searching for release APK..."
+          echo "=========================================="
 
           APK=$(find android \
             -type f \
@@ -268,8 +459,12 @@ jobs:
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Release APK NOT FOUND"
 
+            echo ""
+            echo "ERROR: Release APK NOT FOUND"
+            echo ""
+
+            echo "All APK files:"
             find android \
               -type f \
               -name "*.apk" \
@@ -278,6 +473,7 @@ jobs:
             exit 1
           fi
 
+          echo ""
           echo "APK found:"
           echo "$APK"
 
@@ -287,9 +483,16 @@ jobs:
             "release/Abir-AI-2.9.0-Final.apk"
 
           echo ""
-          echo "Final APK:"
+          echo "=========================================="
+          echo "FINAL APK"
+          echo "=========================================="
+
           ls -lh release/Abir-AI-2.9.0-Final.apk
 
+
+      # ==========================================
+      # 17. Upload APK
+      # ==========================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
