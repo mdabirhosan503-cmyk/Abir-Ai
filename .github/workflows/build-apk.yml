@@ -1,4 +1,4 @@
-name: Build Abir AI 2.7.1
+name: Build Abir AI 2.9.0 Final
 
 on:
   workflow_dispatch:
@@ -14,37 +14,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find source ZIP
+      - name: Extract Abir AI ZIP
         shell: bash
         run: |
           set -e
 
           ZIP_FILE=$(find . -maxdepth 1 -type f \
-            -name "Bengali-Voice-Buddy-AbirAI-2.7.1-AccessibilityFix.zip" \
+            -name "Bengali-Voice-Buddy-AbirAI-2.9.0-Final.zip" \
             -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Source ZIP not found."
-            echo "Files in repository:"
-            ls -la
+            echo "ERROR: Bengali-Voice-Buddy-AbirAI-2.9.0-Final.zip not found!"
+            echo "Put the ZIP file in the repository root."
             exit 1
           fi
 
           echo "Found: $ZIP_FILE"
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      - name: Extract source ZIP
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf extracted
           mkdir -p extracted
-
           unzip -q "$ZIP_FILE" -d extracted
-
-          echo "Extracted project:"
-          find extracted -maxdepth 5 -type f -name package.json -print
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -55,210 +43,181 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 12.14.0
+          run_install: false
 
-      - name: Find Android project
+      - name: Find Abir AI project
         shell: bash
         run: |
           set -e
 
-          PROJECT_DIR=$(find extracted -type f \
+          PROJECT=$(find extracted \
+            -type f \
             -path "*/artifacts/abir-ai/package.json" \
             -print -quit | xargs -r dirname)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Could not find artifacts/abir-ai project."
-            find extracted -maxdepth 8 -type f -name package.json -print
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: Abir AI project not found!"
+            find extracted -maxdepth 5 -type f -name package.json
             exit 1
           fi
 
-          echo "PROJECT_DIR=$PROJECT_DIR"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
-      - name: Show project information
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          echo "Current directory:"
-          pwd
-
-          echo
-          echo "Project files:"
-          ls -la
-
-          echo
-          echo "Package:"
-          cat package.json
+          echo "Project found:"
+          echo "$PROJECT"
 
       - name: Install dependencies
+        working-directory: ${{ env.PROJECT }}
+        run: |
+          pnpm install --no-frozen-lockfile --allow-build=esbuild
+
+      - name: Prepare Gradle
+        working-directory: ${{ env.PROJECT }}/android
+        run: |
+          chmod +x gradlew
+
+      - name: Fix Android version
+        working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          cd "$PROJECT_DIR"
+          FILE="android/app/build.gradle"
 
-          pnpm install \
-            --no-frozen-lockfile \
-            --allow-build=esbuild
+          if [ -f "$FILE" ]; then
+            python3 - <<'PY'
+from pathlib import Path
 
-      - name: Check Android project
-        shell: bash
-        run: |
-          set -e
+p = Path("android/app/build.gradle")
+s = p.read_text()
 
-          if [ ! -f "$PROJECT_DIR/android/gradlew" ]; then
-            echo "ERROR: android/gradlew not found."
-            find "$PROJECT_DIR" -maxdepth 4 -type f -name gradlew -print
-            exit 1
+if "versionName" not in s:
+    s = s.replace(
+        "defaultConfig {",
+        'defaultConfig {\n        versionName "2.9.0"',
+        1
+    )
+
+p.write_text(s)
+PY
           fi
 
-          chmod +x "$PROJECT_DIR/android/gradlew"
-
-          echo "Gradle:"
-          cd "$PROJECT_DIR/android"
-          ./gradlew --version
-
-      - name: Fix launcher versionName
+      - name: Fix Accessibility Service
+        working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          LAUNCHER_FILE=$(find "$PROJECT_DIR/android" \
-            -path "*/abir-app-launcher/build.gradle*" \
-            -print -quit)
-
-          if [ -n "$LAUNCHER_FILE" ]; then
-            echo "Launcher Gradle file:"
-            echo "$LAUNCHER_FILE"
-
-            if ! grep -q "versionName" "$LAUNCHER_FILE"; then
-              python3 - "$LAUNCHER_FILE" <<'PY'
-          import sys
-          from pathlib import Path
-
-          path = Path(sys.argv[1])
-          text = path.read_text()
-
-          marker = "android {"
-
-          if marker in text:
-              text = text.replace(
-                  marker,
-                  marker + "\n    defaultConfig {\n        versionName \"2.7.1\"\n    }",
-                  1
-              )
-
-          path.write_text(text)
-          PY
-            fi
-          fi
-
-      - name: Fix Contacts Kotlin compatibility
-        shell: bash
-        run: |
-          set -e
-
-          CONTACT_FILE=$(find "$PROJECT_DIR/android" \
-            -name "AbirAppLauncherModule.kt" \
-            -print -quit)
-
-          if [ -n "$CONTACT_FILE" ]; then
-            echo "Found:"
-            echo "$CONTACT_FILE"
-
-            python3 - "$CONTACT_FILE" <<'PY'
-          import sys
-          from pathlib import Path
-
-          path = Path(sys.argv[1])
-          text = path.read_text()
-
-          replacements = {
-              "ContactsContract.CommonDataKinds.Phone.CONTENT_URI":
-                  "ContactsContract.CommonDataKinds.Phone.CONTENT_URI",
-          }
-
-          for old, new in replacements.items():
-              text = text.replace(old, new)
-
-          path.write_text(text)
-          PY
-          fi
-
-      - name: Verify Accessibility Service source
-        shell: bash
-        run: |
-          set -e
-
-          ACCESS_FILE=$(find "$PROJECT_DIR/android" \
+          FILE=$(find . \
+            -type f \
             -name "AbirAccessibilityService.kt" \
             -print -quit)
 
-          if [ -z "$ACCESS_FILE" ]; then
+          if [ -z "$FILE" ]; then
             echo "Accessibility service file not found."
             exit 0
           fi
 
-          echo "Accessibility service:"
-          echo "$ACCESS_FILE"
+          echo "Fixing:"
+          echo "$FILE"
 
-          echo
-          echo "Relevant source:"
-          sed -n '1,220p' "$ACCESS_FILE"
+          python3 - "$FILE" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+# Make sure AccessibilityEvent import exists
+if "import android.view.accessibility.AccessibilityEvent" not in s:
+    marker = "import android.view.accessibility.AccessibilityNodeInfo"
+    if marker in s:
+        s = s.replace(
+            marker,
+            "import android.view.accessibility.AccessibilityEvent\n" + marker
+        )
+
+# Replace problematic event constants
+s = s.replace(
+    "AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED",
+    "32"
+)
+
+s = s.replace(
+    "AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED",
+    "2048"
+)
+
+s = s.replace(
+    "AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED",
+    "16"
+)
+
+# Also handle AccessibilityServiceInfo references
+s = s.replace(
+    "AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED",
+    "32"
+)
+
+s = s.replace(
+    "AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED",
+    "2048"
+)
+
+s = s.replace(
+    "AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED",
+    "16"
+)
+
+p.write_text(s)
+
+print("Accessibility fix completed.")
+PY
+
+      - name: Verify Android project
+        working-directory: ${{ env.PROJECT }}/android
+        run: |
+          echo "Gradle:"
+          ./gradlew --version
 
       - name: Build Release APK
-        shell: bash
+        working-directory: ${{ env.PROJECT }}/android
         env:
           EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EXPO_PUBLIC_GEMINI_MODEL: gemini-2.5-flash
         run: |
-          set -e
-
-          cd "$PROJECT_DIR/android"
-
-          echo "Building Abir AI 2.7.1..."
-
-          ./gradlew \
-            :app:assembleRelease \
+          ./gradlew :app:assembleRelease \
             --no-daemon \
             --stacktrace
 
       - name: Find Release APK
+        working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          APK=$(find "$PROJECT_DIR/android" \
+          APK=$(find android \
             -type f \
             -path "*/build/outputs/apk/release/*.apk" \
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Release APK not found."
-
-            echo
-            echo "APK files found:"
-            find "$PROJECT_DIR/android" \
-              -type f \
-              -name "*.apk" \
-              -print
-
+            echo "ERROR: Release APK not found!"
+            find android -type f -name "*.apk"
             exit 1
           fi
 
-          echo "APK found:"
+          echo "APK:"
           echo "$APK"
 
-          mkdir -p "$GITHUB_WORKSPACE/release"
+          mkdir -p release
+          cp "$APK" release/Abir-AI-2.9.0-Final.apk
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Abir-AI-2.7.1-release.apk"
+          ls -lh release/Abir-AI-2.9.0-Final.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-release-apk-2.7.1
-          path: release/Abir-AI-2.7.1-release.apk
+          name: Abir-AI-2.9.0-Final
+          path: ${{ env.PROJECT }}/release/Abir-AI-2.9.0-Final.apk
           if-no-files-found: error
