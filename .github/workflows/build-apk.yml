@@ -34,27 +34,47 @@ jobs:
         shell: bash
         run: |
           set -e
+          rm -rf extracted
           mkdir -p extracted
+
           ZIP=$(find . -type f -name "*.zip" | head -n 1)
+
           if [ -z "$ZIP" ]; then
-            echo "No ZIP file found"
+            echo "ERROR: No ZIP file found"
             exit 1
           fi
-          echo "Using $ZIP"
+
+          echo "Using source ZIP:"
+          echo "$ZIP"
+
           unzip -q "$ZIP" -d extracted
 
       - name: Find project
         shell: bash
         run: |
           set -e
-          FILE=$(find extracted -type f -path "*/artifacts/abir-ai/package.json" | head -n 1)
+
+          FILE=$(find extracted -type f -name "package.json" | while read -r F; do
+            D=$(dirname "$F")
+            if [ -f "$D/android/gradlew" ]; then
+              echo "$F"
+              break
+            fi
+          done)
+
           if [ -z "$FILE" ]; then
-            echo "Project not found"
+            echo "ERROR: Android project not found"
+
+            find extracted -maxdepth 5 -type f -name "gradlew"
             exit 1
           fi
+
           PROJECT=$(dirname "$FILE")
+
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "Project: $PROJECT"
+
+          echo "Project:"
+          echo "$PROJECT"
 
       - name: Install dependencies
         working-directory: ${{ env.PROJECT }}
@@ -69,48 +89,32 @@ jobs:
         run: |
           set -e
 
-          FILE=$(find . -type f -name "AbirAppLauncherModule.kt" | head -n 1)
+          CONTACTS=$(find . -type f -name "AbirAppLauncherModule.kt" | head -n 1)
 
-          if [ -n "$FILE" ]; then
-            sed -i 's/ResolveInfoFlags.of(0)/ResolveInfoFlags.of(0L)/g' "$FILE"
+          if [ -n "$CONTACTS" ]; then
+            echo "Fixing contacts Kotlin"
+            sed -i 's/ResolveInfoFlags.of(0)/ResolveInfoFlags.of(0L)/g' "$CONTACTS"
           fi
 
-          FILE=$(find . -type f -name "AbirAccessibilityService.kt" | head -n 1)
+          ACCESS=$(find . -type f -name "AbirAccessibilityService.kt" | head -n 1)
 
-          if [ -n "$FILE" ]; then
-            sed -i 's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
-            sed -i 's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
-            sed -i 's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
+          if [ -n "$ACCESS" ]; then
+            echo "Fixing accessibility Kotlin"
+
+            sed -i 's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' "$ACCESS"
+            sed -i 's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' "$ACCESS"
+            sed -i 's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$ACCESS"
           fi
 
-      - name: Fix launcher Gradle
+      - name: Fix Android version files
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          FILE=$(find android -type f -path "*/abir-app-launcher/build.gradle" | head -n 1)
+          echo "Searching Gradle files..."
 
-          if [ -z "$FILE" ]; then
-            echo "Launcher Gradle file not found"
-            exit 1
-          fi
-
-          echo "Launcher: $FILE"
-
-          if ! grep -q "versionName" "$FILE"; then
-            sed -i '/defaultConfig[[:space:]]*{/a\        versionName "3.7.0"' "$FILE"
-          fi
-
-          if ! grep -q "versionCode" "$FILE"; then
-            sed -i '/defaultConfig[[:space:]]*{/a\        versionCode 16' "$FILE"
-          fi
-
-      - name: Fix app version
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
+          find android -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) -print
 
           if [ -f android/app/build.gradle ]; then
             sed -i 's/versionCode [0-9]*/versionCode 16/' android/app/build.gradle
@@ -121,6 +125,53 @@ jobs:
             sed -i 's/"version": "[^"]*"/"version": "3.7.0"/' app.json
           fi
 
+      - name: Fix launcher modules automatically
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching all launcher-related Gradle files..."
+
+          find android -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) -print | while read -r FILE; do
+
+            if grep -qi "abir-app-launcher" "$FILE" || grep -qi "app-launcher" "$FILE"; then
+
+              echo "Possible launcher file:"
+              echo "$FILE"
+
+              if grep -q "defaultConfig" "$FILE"; then
+
+                if ! grep -q "versionName" "$FILE"; then
+                  sed -i '/defaultConfig[[:space:]]*{/a\        versionName "3.7.0"' "$FILE"
+                fi
+
+                if ! grep -q "versionCode" "$FILE"; then
+                  sed -i '/defaultConfig[[:space:]]*{/a\        versionCode 16' "$FILE"
+                fi
+
+              fi
+
+            fi
+
+          done
+
+          echo "Launcher scan finished."
+
+      - name: Show Android structure
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Android modules:"
+          find android -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" \) -print
+
+          echo "Settings:"
+          if [ -f android/settings.gradle ]; then
+            cat android/settings.gradle
+          fi
+
       - name: Build APK
         working-directory: ${{ env.PROJECT }}/android
         env:
@@ -129,8 +180,13 @@ jobs:
         shell: bash
         run: |
           set -e
+
           chmod +x gradlew
+
+          echo "Cleaning..."
           ./gradlew clean --no-daemon
+
+          echo "Building release APK..."
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Prepare APK
@@ -142,11 +198,13 @@ jobs:
           APK=$(find android -type f -path "*/build/outputs/apk/release/*.apk" | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "APK not found"
+            echo "ERROR: APK not found"
+            find android -type f -name "*.apk"
             exit 1
           fi
 
           mkdir -p release
+
           cp "$APK" release/Abir-AI-release.apk
 
           ls -lh release/Abir-AI-release.apk
