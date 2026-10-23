@@ -1,4 +1,4 @@
-name: Build Abir AI 3.7.0
+name: Build Abir AI
 
 on:
   workflow_dispatch:
@@ -10,11 +10,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      NODE_ENV: production
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java
@@ -23,7 +20,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -32,265 +29,99 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: "12.14.0"
-          run_install: false
 
-      - name: Find and extract source
+      - name: Extract source
         shell: bash
         run: |
           set -e
-
-          ZIP="$(find . -type f -name 'Bengali-Voice-Buddy-AbirAI-3.7.0-CodingAgent-Boss.zip' -print -quit)"
-
+          mkdir -p extracted
+          ZIP=$(find . -type f -name "*.zip" | head -n 1)
           if [ -z "$ZIP" ]; then
-            echo "ERROR: 3.7.0 source ZIP was not found."
-            echo "Available ZIP files:"
-            find . -type f -name "*.zip"
+            echo "No ZIP file found"
             exit 1
           fi
-
-          echo "Using source: $ZIP"
-
-          rm -rf extracted
-          mkdir -p extracted
-
+          echo "Using $ZIP"
           unzip -q "$ZIP" -d extracted
 
-      - name: Locate Abir AI project
+      - name: Find project
         shell: bash
         run: |
           set -e
-
-          PROJECT_JSON="$(find extracted -type f -path '*/artifacts/abir-ai/package.json' -print -quit)"
-
-          if [ -z "$PROJECT_JSON" ]; then
-            PROJECT_JSON="$(find extracted -type f -name 'package.json' -print | while read -r FILE; do
-              DIR="$(dirname "$FILE")"
-              if [ -f "$DIR/android/gradlew" ]; then
-                echo "$FILE"
-                break
-              fi
-            done)"
-          fi
-
-          if [ -z "$PROJECT_JSON" ]; then
-            echo "ERROR: Abir AI project could not be found."
+          FILE=$(find extracted -type f -path "*/artifacts/abir-ai/package.json" | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "Project not found"
             exit 1
           fi
-
-          PROJECT_DIR="$(dirname "$PROJECT_JSON")"
-
-          echo "PROJECT=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Project directory:"
-          echo "$PROJECT_DIR"
-
-      - name: Verify project
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
-
-          test -f package.json
-          test -d android
-          test -f android/gradlew
-
-          chmod +x android/gradlew
-
-          echo "Project verification successful."
+          PROJECT=$(dirname "$FILE")
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "Project: $PROJECT"
 
       - name: Install dependencies
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
-
           pnpm install --no-frozen-lockfile --allow-build=esbuild
 
-      - name: Fix Contacts Kotlin
+      - name: Fix Kotlin
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          FILE="$(find . -type f -name 'AbirAppLauncherModule.kt' -print -quit)"
+          FILE=$(find . -type f -name "AbirAppLauncherModule.kt" | head -n 1)
 
           if [ -n "$FILE" ]; then
-            echo "Fixing Contacts Kotlin: $FILE"
-
             sed -i 's/ResolveInfoFlags.of(0)/ResolveInfoFlags.of(0L)/g' "$FILE"
           fi
 
-      - name: Fix Accessibility Kotlin
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
-
-          FILE="$(find . -type f -name 'AbirAccessibilityService.kt' -print -quit)"
+          FILE=$(find . -type f -name "AbirAccessibilityService.kt" | head -n 1)
 
           if [ -n "$FILE" ]; then
-            echo "Fixing Accessibility Kotlin: $FILE"
-
             sed -i 's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
             sed -i 's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
             sed -i 's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
-
-            sed -i 's/AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
-            sed -i 's/AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
-            sed -i 's/AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
           fi
 
-      - name: Fix all Android versions
+      - name: Fix launcher Gradle
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          echo "======================================"
-          echo "Fixing Android version configuration"
-          echo "======================================"
+          FILE=$(find android -type f -path "*/abir-app-launcher/build.gradle" | head -n 1)
+
+          if [ -z "$FILE" ]; then
+            echo "Launcher Gradle file not found"
+            exit 1
+          fi
+
+          echo "Launcher: $FILE"
+
+          if ! grep -q "versionName" "$FILE"; then
+            sed -i '/defaultConfig[[:space:]]*{/a\        versionName "3.7.0"' "$FILE"
+          fi
+
+          if ! grep -q "versionCode" "$FILE"; then
+            sed -i '/defaultConfig[[:space:]]*{/a\        versionCode 16' "$FILE"
+          fi
+
+      - name: Fix app version
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/versionCode [0-9]*/versionCode 16/' android/app/build.gradle
+            sed -i 's/versionName "[^"]*"/versionName "3.7.0"/' android/app/build.gradle
+          fi
 
           if [ -f app.json ]; then
             sed -i 's/"version": "[^"]*"/"version": "3.7.0"/' app.json
-            sed -i 's/"versionCode": [0-9]*/"versionCode": 16/' app.json
           fi
 
-          if [ -f android/app/build.gradle ]; then
-
-            if grep -q "versionCode" android/app/build.gradle; then
-              sed -i '0,/versionCode [0-9]*/s//versionCode 16/' android/app/build.gradle
-            fi
-
-            if grep -q "versionName" android/app/build.gradle; then
-              sed -i '0,/versionName "[^"]*"/s//versionName "3.7.0"/' android/app/build.gradle
-            fi
-
-          fi
-
-          echo "Searching for Abir App Launcher modules..."
-
-          find android -type f -name "build.gradle" -print | while read -r FILE; do
-
-            if grep -q "com.android.library" "$FILE"; then
-
-              if grep -q "versionName" "$FILE"; then
-                sed -i '0,/versionName "[^"]*"/s//versionName "3.7.0"/' "$FILE"
-              fi
-
-              if grep -q "versionCode" "$FILE"; then
-                sed -i '0,/versionCode [0-9]*/s//versionCode 16/' "$FILE"
-              fi
-
-            fi
-
-          done
-
-          LAUNCHER="$(find android -type f -path '*/abir-app-launcher/build.gradle' -print -quit)"
-
-          if [ -n "$LAUNCHER" ]; then
-
-            echo "======================================"
-            echo "Launcher found:"
-            echo "$LAUNCHER"
-            echo "======================================"
-
-            if grep -q "defaultConfig" "$LAUNCHER"; then
-
-              if ! grep -q "versionName" "$LAUNCHER"; then
-                sed -i '/defaultConfig[[:space:]]*{/a\        versionName "3.7.0"' "$LAUNCHER"
-              fi
-
-              if ! grep -q "versionCode" "$LAUNCHER"; then
-                sed -i '/defaultConfig[[:space:]]*{/a\        versionCode 16' "$LAUNCHER"
-              fi
-
-            else
-
-              cat >> "$LAUNCHER" <<'EOF'
-
-android {
-    defaultConfig {
-        versionCode 16
-        versionName "3.7.0"
-    }
-}
-EOF
-
-            fi
-
-          else
-            echo "WARNING: abir-app-launcher build.gradle not found."
-          fi
-
-          echo "======================================"
-          echo "Version configuration finished"
-          echo "======================================"
-
-      - name: Force launcher version fallback
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
-
-          find android -type f -name "build.gradle" -print | while read -r FILE; do
-
-            if grep -q "android.defaultConfig.versionName" "$FILE"; then
-
-              echo "Checking problematic file:"
-              echo "$FILE"
-
-              if ! grep -q 'versionName "3.7.0"' "$FILE"; then
-                sed -i '/defaultConfig[[:space:]]*{/a\        versionName "3.7.0"' "$FILE"
-              fi
-
-            fi
-
-          done
-
-      - name: Verify important files
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
-
-          test -f assistant/offlineBrain.ts
-          test -f assistant/onlineAssistant.ts
-          test -f assistant/voiceInput.ts
-          test -f assistant/textToSpeech.ts
-          test -f assistant/androidActions.ts
-          test -f assistant/intentParser.ts
-          test -f assistant/localMemory.ts
-          test -f assistant/commandEngine.ts
-
-          echo "Abir AI source files verified."
-
-      - name: Show launcher Gradle
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
-
-          LAUNCHER="$(find android -type f -path '*/abir-app-launcher/build.gradle' -print -quit)"
-
-          if [ -n "$LAUNCHER" ]; then
-            echo "======================================"
-            echo "FINAL LAUNCHER GRADLE"
-            echo "======================================"
-            cat "$LAUNCHER"
-            echo "======================================"
-          fi
-
-      - name: Clean Gradle
-        working-directory: ${{ env.PROJECT }}/android
-        shell: bash
-        run: |
-          set -e
-
-          chmod +x gradlew
-
-          ./gradlew clean --no-daemon
-
-      - name: Build release APK
+      - name: Build APK
         working-directory: ${{ env.PROJECT }}/android
         env:
           EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -298,57 +129,31 @@ EOF
         shell: bash
         run: |
           set -e
-
-          echo "======================================"
-          echo "       ABIR AI 3.7.0 BUILD"
-          echo "======================================"
-          echo "Offline AI        : ENABLED"
-          echo "Online Gemini     : ENABLED"
-          echo "Bengali Voice     : ENABLED"
-          echo "Wake Word         : ENABLED"
-          echo "Phone Control     : ENABLED"
-          echo "Accessibility     : ENABLED"
-          echo "Camera            : ENABLED"
-          echo "App Lock          : ENABLED"
-          echo "Local Memory      : ENABLED"
-          echo "Coding Agent      : ENABLED"
-          echo "Boss Mode         : ENABLED"
-          echo "======================================"
-
+          chmod +x gradlew
+          ./gradlew clean --no-daemon
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
-          echo "======================================"
-          echo "       BUILD SUCCESSFUL"
-          echo "======================================"
-
-      - name: Locate APK
+      - name: Prepare APK
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          APK="$(find android -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
+          APK=$(find android -type f -path "*/build/outputs/apk/release/*.apk" | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Release APK was not found."
-
-            find android -type f -name "*.apk"
-
+            echo "APK not found"
             exit 1
           fi
 
-          echo "APK found:"
-          echo "$APK"
-
           mkdir -p release
+          cp "$APK" release/Abir-AI-release.apk
 
-          cp "$APK" "release/Abir-AI-3.7.0-CodingAgent-Boss.apk"
+          ls -lh release/Abir-AI-release.apk
 
-          ls -lh "release/Abir-AI-3.7.0-CodingAgent-Boss.apk"
-
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-3.7.0-CodingAgent-Boss
-          path: ${{ env.PROJECT }}/release/Abir-AI-3.7.0-CodingAgent-Boss.apk
+          name: Abir-AI-release-apk
+          path: ${{ env.PROJECT }}/release/Abir-AI-release.apk
           if-no-files-found: error
