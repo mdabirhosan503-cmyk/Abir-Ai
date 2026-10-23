@@ -30,7 +30,7 @@ jobs:
 
 
       # ==========================================
-      # 3. Find and Extract Abir AI ZIP
+      # 3. Extract Abir AI ZIP
       # ==========================================
       - name: Extract Abir AI ZIP
         shell: bash
@@ -42,15 +42,15 @@ jobs:
           echo "=========================================="
 
           ZIP_FILE=$(find . -maxdepth 1 -type f \
-            -name "Bengali-Voice-Buddy-AbirAI-2.9.1-Memory200 .zip" \
+            -name "Bengali-Voice-Buddy-AbirAI-2.9.1-Memory200.zip" \
             -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
             echo ""
-            echo "ERROR: Abir AI ZIP NOT FOUND!"
+            echo "ERROR: ABIR AI ZIP NOT FOUND!"
             echo ""
             echo "Expected EXACT filename:"
-            echo "Bengali-Voice-Buddy-AbirAI-2.9.1-Memory200 .zip"
+            echo "Bengali-Voice-Buddy-AbirAI-2.9.1-Memory200.zip"
             echo ""
             echo "Files currently in repository:"
             ls -lah
@@ -108,7 +108,7 @@ jobs:
 
           if [ -z "$PROJECT" ]; then
             echo ""
-            echo "ERROR: Abir AI project NOT FOUND!"
+            echo "ERROR: ABIR AI PROJECT NOT FOUND!"
             echo ""
             echo "Available package.json files:"
             find extracted -type f -name package.json
@@ -120,7 +120,7 @@ jobs:
           echo "PROJECT=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Abir AI project:"
+          echo "Abir AI project found:"
           echo "$PROJECT_DIR"
 
 
@@ -140,7 +140,7 @@ jobs:
             --no-frozen-lockfile \
             --allow-build=esbuild
 
-          echo "Dependencies installed."
+          echo "Dependencies installed successfully."
 
 
       # ==========================================
@@ -159,11 +159,11 @@ jobs:
 
           chmod +x android/gradlew
 
-          echo "Android Gradle project found."
+          echo "Android project found."
 
 
       # ==========================================
-      # 9. Fix Android Version Names
+      # 9. Fix Android versionName
       # ==========================================
       - name: Fix Android versionName
         working-directory: ${{ env.PROJECT }}
@@ -199,9 +199,9 @@ jobs:
               print("")
               print("Checking:", p)
 
-              # ---------------------------------------------
+              # ------------------------------------------
               # Groovy build.gradle
-              # ---------------------------------------------
+              # ------------------------------------------
               if p.name == "build.gradle":
 
                   if "defaultConfig {" in s:
@@ -230,9 +230,9 @@ jobs:
 
                       print("Created defaultConfig:", p)
 
-              # ---------------------------------------------
+              # ------------------------------------------
               # Kotlin build.gradle.kts
-              # ---------------------------------------------
+              # ------------------------------------------
               elif p.name == "build.gradle.kts":
 
                   if "defaultConfig {" in s:
@@ -269,7 +269,7 @@ jobs:
 
 
       # ==========================================
-      # 10. Specifically Fix Abir App Launcher
+      # 10. Fix Abir App Launcher Gradle
       # ==========================================
       - name: Fix Abir App Launcher Gradle
         working-directory: ${{ env.PROJECT }}
@@ -278,7 +278,7 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "FIXING ABIR APP LAUNCHER"
+          echo "FIXING ABIR APP LAUNCHER GRADLE"
           echo "=========================================="
 
           FILE=$(find modules \
@@ -299,7 +299,6 @@ jobs:
           import sys
 
           p = Path(sys.argv[1])
-
           s = p.read_text()
 
           if "android {" in s and "versionName" not in s:
@@ -357,7 +356,6 @@ jobs:
           import sys
 
           p = Path(sys.argv[1])
-
           s = p.read_text()
 
           if "import android.view.accessibility.AccessibilityEvent" not in s:
@@ -365,7 +363,6 @@ jobs:
               marker = "import android.view.accessibility.AccessibilityNodeInfo"
 
               if marker in s:
-
                   s = s.replace(
                       marker,
                       "import android.view.accessibility.AccessibilityEvent\n"
@@ -421,7 +418,6 @@ jobs:
           import sys
 
           p = Path(sys.argv[1])
-
           s = p.read_text()
 
           s = s.replace(
@@ -491,7 +487,7 @@ jobs:
 
           ./gradlew clean --no-daemon
 
-          echo "Clean completed."
+          echo "Clean completed successfully."
 
 
       # ==========================================
@@ -506,10 +502,12 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "BUILDING ABIR AI MEMORY 200"
+          echo "BUILDING ABIR AI"
           echo "=========================================="
           echo ""
-          echo "App internal version: 2.9.1"
+          echo "Source ZIP: Memory 200"
+          echo "Internal app version: 2.9.1"
+          echo "APK filename: Abir-AI-2.9.0-Final.apk"
           echo "Memory limit: 200"
           echo ""
 
@@ -519,7 +517,9 @@ jobs:
             --warning-mode all
 
           echo ""
-          echo "BUILD COMPLETED."
+          echo "=========================================="
+          echo "BUILD COMPLETED"
+          echo "=========================================="
 
 
       # ==========================================
@@ -545,8 +545,7 @@ jobs:
             echo ""
             echo "ERROR: RELEASE APK NOT FOUND!"
             echo ""
-            echo "Searching all APK files:"
-            
+
             find android \
               -type f \
               -name "*.apk" \
@@ -562,14 +561,15 @@ jobs:
 
           mkdir -p release
 
-          # ------------------------------------------
           # Keep the old APK filename
-          # ------------------------------------------
           cp "$APK" \
             "release/Abir-AI-2.9.0-Final.apk"
 
           echo ""
-          echo "FINAL APK:"
+          echo "=========================================="
+          echo "FINAL APK"
+          echo "=========================================="
+
           ls -lh release/Abir-AI-2.9.0-Final.apk
 
 
