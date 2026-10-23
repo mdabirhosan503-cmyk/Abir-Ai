@@ -31,15 +31,17 @@ jobs:
           version: "12.14.0"
           run_install: false
 
-      - name: Extract source ZIP
+      - name: Extract FIXED2 source ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" -print -quit)
+          ZIP="Bengali-Voice-Buddy-AbirAI-3.7.0-CodingAgent-Boss-FIXED2.zip"
 
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: Source ZIP not found"
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: $ZIP not found"
+            echo "ZIP files available:"
+            find . -maxdepth 1 -type f -name "*.zip" -print
             exit 1
           fi
 
@@ -84,7 +86,6 @@ jobs:
       # ---------------------------------------------------------
       # FIX 1: Launcher Gradle version
       # ---------------------------------------------------------
-
       - name: Fix launcher Gradle
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -95,47 +96,86 @@ jobs:
 
           if [ ! -f "$FILE" ]; then
             echo "ERROR: $FILE not found"
-            find modules -type f -name build.gradle -print
             exit 1
           fi
 
-          if grep -q "defaultConfig" "$FILE"; then
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
 
-            if grep -q "versionName" "$FILE"; then
-              sed -i \
-                's/versionName "[^"]*"/versionName "3.7.0"/' \
-                "$FILE"
-            else
-              sed -i \
-                '/defaultConfig[[:space:]]*{/a\        versionName "3.7.0"' \
-                "$FILE"
-            fi
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding="utf-8")
 
-            if grep -q "versionCode" "$FILE"; then
-              sed -i \
-                's/versionCode [0-9]*/versionCode 16/' \
-                "$FILE"
-            else
-              sed -i \
-                '/defaultConfig[[:space:]]*{/a\        versionCode 16' \
-                "$FILE"
-            fi
+          # Ensure android block exists
+          if not re.search(r'^\s*android\s*\{', s, re.MULTILINE):
+              raise SystemExit("ERROR: android { block not found")
 
-          else
+          # If defaultConfig exists, update it.
+          # Otherwise insert a new defaultConfig inside android.
+          if re.search(r'^\s*defaultConfig\s*\{', s, re.MULTILINE):
+              s = re.sub(
+                  r'(\bdefaultConfig\s*\{)',
+                  r'\1\n        versionCode 16\n        versionName "3.7.0"',
+                  s,
+                  count=1
+              )
 
-            sed -i \
-              '/android[[:space:]]*{/a\    defaultConfig {\n        versionCode 16\n        versionName "3.7.0"\n    }' \
-              "$FILE"
+              # Remove duplicate versionCode/versionName lines created
+              # by previous workflow runs, then keep the first correct pair.
+              lines = s.splitlines()
+              out = []
+              seen_code = False
+              seen_name = False
 
-          fi
+              for line in lines:
+                  if re.search(r'^\s*versionCode\s+', line):
+                      if seen_code:
+                          continue
+                      line = re.sub(
+                          r'versionCode\s+\d+',
+                          'versionCode 16',
+                          line
+                      )
+                      seen_code = True
 
-          echo "Launcher Gradle after fix:"
+                  if re.search(r'^\s*versionName\s+', line):
+                      if seen_name:
+                          continue
+                      line = re.sub(
+                          r'versionName\s+"[^"]*"',
+                          'versionName "3.7.0"',
+                          line
+                      )
+                      seen_name = True
+
+                  out.append(line)
+
+              s = "\n".join(out) + "\n"
+
+          else:
+              s = re.sub(
+                  r'(^\s*android\s*\{)',
+                  r'''\1
+              defaultConfig {
+                  versionCode 16
+                  versionName "3.7.0"
+              }''',
+                  s,
+                  count=1,
+                  flags=re.MULTILINE
+              )
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+          echo "========== Launcher Gradle =========="
           cat "$FILE"
+          echo "====================================="
 
       # ---------------------------------------------------------
       # FIX 2: Contacts Kotlin
       # ---------------------------------------------------------
-
       - name: Fix Contacts Kotlin
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -144,18 +184,20 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
 
-          if [ -f "$FILE" ]; then
-            sed -i \
-              's/ResolveInfoFlags.of(0)/ResolveInfoFlags.of(0L)/g' \
-              "$FILE"
-
-            echo "Contacts Kotlin fixed."
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: Contacts Kotlin file not found"
+            exit 1
           fi
 
-      # ---------------------------------------------------------
-      # FIX 3: Accessibility Kotlin
-      # ---------------------------------------------------------
+          sed -i \
+            's/ResolveInfoFlags\.of(0[^L])/ResolveInfoFlags.of(0L)/g' \
+            "$FILE"
 
+          echo "Contacts Kotlin checked."
+
+      # ---------------------------------------------------------
+      # Accessibility compatibility
+      # ---------------------------------------------------------
       - name: Fix Accessibility Kotlin
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -165,39 +207,22 @@ jobs:
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAccessibilityService.kt"
 
           if [ -f "$FILE" ]; then
+            sed -i 's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
+            sed -i 's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
+            sed -i 's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
 
-            sed -i \
-              's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' \
-              "$FILE"
-
-            sed -i \
-              's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' \
-              "$FILE"
-
-            sed -i \
-              's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' \
-              "$FILE"
-
-            sed -i \
-              's/AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED/32/g' \
-              "$FILE"
-
-            sed -i \
-              's/AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED/2048/g' \
-              "$FILE"
-
-            sed -i \
-              's/AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED/16/g' \
-              "$FILE"
-
-            echo "Accessibility Kotlin fixed."
+            sed -i 's/AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
+            sed -i 's/AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
+            sed -i 's/AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
           fi
 
-      # ---------------------------------------------------------
-      # FIX 4: IMPORTANT Coroutine ERROR
-      # ---------------------------------------------------------
+          echo "Accessibility Kotlin checked."
 
-      - name: Fix Offline Speech Coroutine
+      # ---------------------------------------------------------
+      # IMPORTANT:
+      # DO NOT REMOVE Coroutine
+      # ---------------------------------------------------------
+      - name: Verify Offline Speech Coroutine
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
@@ -210,44 +235,42 @@ jobs:
             exit 1
           fi
 
-          python3 - "$FILE" <<'PY'
-          from pathlib import Path
-          import sys
+          echo "========== Coroutine verification =========="
 
-          file = Path(sys.argv[1])
-          text = file.read_text(encoding="utf-8")
+          grep -F \
+            "import expo.modules.kotlin.functions.Coroutine" \
+            "$FILE" >/dev/null || {
+              echo "ERROR: Expo Coroutine import missing"
+              exit 1
+            }
 
-          old = 'AsyncFunction("recognizeOffline") Coroutine { localeTag: String ->'
-          new = 'AsyncFunction("recognizeOffline") { localeTag: String ->'
+          grep -F \
+            'AsyncFunction("recognizeOffline") Coroutine' \
+            "$FILE" >/dev/null || {
+              echo "ERROR: recognizeOffline Coroutine builder missing"
+              exit 1
+            }
 
-          if old in text:
-              text = text.replace(old, new)
-              print("Removed invalid Coroutine builder.")
-          else:
-              print("Coroutine builder already fixed or not found.")
+          grep -F \
+            "return@Coroutine" \
+            "$FILE" >/dev/null || {
+              echo "ERROR: return@Coroutine missing"
+              exit 1
+            }
 
-          text = text.replace(
-              "return@Coroutine emptyList<String>()",
-              "return@AsyncFunction emptyList<String>()"
-          )
+          grep -F \
+            "suspendCancellableCoroutine" \
+            "$FILE" >/dev/null || {
+              echo "ERROR: suspendCancellableCoroutine missing"
+              exit 1
+            }
 
-          file.write_text(text, encoding="utf-8")
-
-          print("")
-          print("Checking recognizeOffline:")
-          for i, line in enumerate(text.splitlines(), 1):
-              if "recognizeOffline" in line or "return@AsyncFunction" in line:
-                  print(f"{i}: {line}")
-          PY
-
-          echo ""
-          echo "Final Coroutine references:"
-          grep -n "Coroutine\|recognizeOffline" "$FILE" || true
+          echo "Coroutine code is correct."
+          echo "============================================"
 
       # ---------------------------------------------------------
-      # FIX 5: App version
+      # App version
       # ---------------------------------------------------------
-
       - name: Fix app version
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -255,19 +278,29 @@ jobs:
           set -e
 
           if [ -f android/app/build.gradle ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-            if grep -q "versionCode" android/app/build.gradle; then
-              sed -i \
-                '0,/versionCode [0-9]*/s//versionCode 16/' \
-                android/app/build.gradle
-            fi
+          p = Path("android/app/build.gradle")
+          s = p.read_text(encoding="utf-8")
 
-            if grep -q "versionName" android/app/build.gradle; then
-              sed -i \
-                '0,/versionName "[^"]*"/s//versionName "3.7.0"/' \
-                android/app/build.gradle
-            fi
+          s = re.sub(
+              r'versionCode\s+\d+',
+              'versionCode 16',
+              s,
+              count=1
+          )
 
+          s = re.sub(
+              r'versionName\s+"[^"]*"',
+              'versionName "3.7.0"',
+              s,
+              count=1
+          )
+
+          p.write_text(s, encoding="utf-8")
+          PY
           fi
 
           if [ -f app.json ]; then
@@ -276,11 +309,12 @@ jobs:
               app.json
           fi
 
-      # ---------------------------------------------------------
-      # Show final Kotlin before build
-      # ---------------------------------------------------------
+          echo "App version fixed to 3.7.0."
 
-      - name: Verify launcher Kotlin
+      # ---------------------------------------------------------
+      # Final verification
+      # ---------------------------------------------------------
+      - name: Final source verification
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
@@ -288,16 +322,46 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
 
-          echo "========== recognizeOffline =========="
+          echo "========== Final Kotlin Check =========="
 
-          sed -n '160,235p' "$FILE"
+          grep -F \
+            'AsyncFunction("recognizeOffline") Coroutine' \
+            "$FILE" >/dev/null
 
-          echo "======================================"
+          echo "OK: Coroutine builder present"
+
+          grep -F \
+            "return@Coroutine" \
+            "$FILE" >/dev/null
+
+          echo "OK: return@Coroutine present"
+
+          grep -F \
+            "suspendCancellableCoroutine" \
+            "$FILE" >/dev/null
+
+          echo "OK: suspendCancellableCoroutine present"
+
+          if grep -Eq \
+            'ResolveInfoFlags\.of\(0\)' \
+            "$FILE"; then
+            echo "ERROR: old ResolveInfoFlags.of(0) still exists"
+            exit 1
+          fi
+
+          if grep -Fq \
+            "ResolveInfoFlags.of(0L)" \
+            "$FILE"; then
+            echo "OK: ResolveInfoFlags uses 0L"
+          else
+            echo "WARNING: ResolveInfoFlags.of(0L) not found"
+          fi
+
+          echo "========================================"
 
       # ---------------------------------------------------------
-      # Prepare Gradle
+      # Gradle
       # ---------------------------------------------------------
-
       - name: Prepare Gradle
         working-directory: ${{ env.PROJECT }}/android
         shell: bash
@@ -307,12 +371,12 @@ jobs:
           chmod +x gradlew
 
           java -version
+
           ./gradlew --version
 
       # ---------------------------------------------------------
       # Build APK
       # ---------------------------------------------------------
-
       - name: Build Release APK
         working-directory: ${{ env.PROJECT }}/android
         env:
@@ -323,21 +387,18 @@ jobs:
         run: |
           set -e
 
-          echo "Cleaning project..."
-
+          echo "========== Cleaning =========="
           ./gradlew clean --no-daemon
 
-          echo "Building release APK..."
+          echo "========== Building Release APK =========="
 
-          ./gradlew \
-            :app:assembleRelease \
+          ./gradlew :app:assembleRelease \
             --no-daemon \
             --stacktrace
 
       # ---------------------------------------------------------
       # Find APK
       # ---------------------------------------------------------
-
       - name: Find APK
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -351,10 +412,8 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: Release APK not found"
-
             echo "Available APK files:"
             find android -type f -name "*.apk" -print
-
             exit 1
           fi
 
@@ -366,12 +425,11 @@ jobs:
           echo ""
           echo "========== APK =========="
           ls -lh release/Abir-AI-3.7.0-release.apk
-          echo "=========================="
+          echo "========================="
 
       # ---------------------------------------------------------
       # Upload APK
       # ---------------------------------------------------------
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
