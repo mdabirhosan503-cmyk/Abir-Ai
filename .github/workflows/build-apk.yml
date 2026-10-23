@@ -216,3 +216,4 @@ jobs:
           name: Abir-AI-3.7.0-release
           path: ${{ env.PROJECT }}/release/Abir-AI-3.7.0-release.apk
           if-no-files-found: error
+          
