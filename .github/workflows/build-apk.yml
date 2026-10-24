@@ -1,4 +1,4 @@
-name: Build Abir AI 3.7.0 Fixed
+name: Build Abir AI 4.1.0 Ultimate
 
 on:
   workflow_dispatch:
@@ -11,47 +11,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ---------------------------------------------------------
+      # Java
+      # ---------------------------------------------------------
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # ---------------------------------------------------------
+      # Node
+      # ---------------------------------------------------------
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # ---------------------------------------------------------
+      # pnpm
+      # ---------------------------------------------------------
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: "12.14.0"
           run_install: false
 
-      - name: Extract FIXED2 source ZIP
+      # ---------------------------------------------------------
+      # Find and extract current 4.1.0 source ZIP
+      # ---------------------------------------------------------
+      - name: Extract 4.1.0 source ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP="Bengali-Voice-Buddy-AbirAI-3.7.0-CodingAgent-Boss-FIXED2.zip"
+          ZIP="Bengali-Voice-Buddy-AbirAI-4.1.0-Ultimate-Final.zip"
 
           if [ ! -f "$ZIP" ]; then
             echo "ERROR: $ZIP not found"
+            echo ""
             echo "ZIP files available:"
-            find . -maxdepth 1 -type f -name "*.zip" -print
+            find . -maxdepth 2 -type f -name "*.zip" -print
             exit 1
           fi
 
-          echo "Using source: $ZIP"
+          echo "Using source:"
+          echo "$ZIP"
 
           rm -rf extracted
           mkdir -p extracted
 
           unzip -q "$ZIP" -d extracted
 
+          echo "Source extracted successfully."
+
+      # ---------------------------------------------------------
+      # Find Abir AI project
+      # ---------------------------------------------------------
       - name: Find Abir AI project
         shell: bash
         run: |
@@ -62,17 +84,38 @@ jobs:
             -path "*/artifacts/abir-ai/package.json" \
             -print -quit | xargs -r dirname)
 
+          # Fallback: find package.json containing android folder
+          if [ -z "$PROJECT" ]; then
+            PROJECT=$(find extracted \
+              -type f \
+              -name "package.json" \
+              -print | while read -r f; do
+                d="$(dirname "$f")"
+                if [ -d "$d/android" ]; then
+                  echo "$d"
+                  break
+                fi
+              done)
+          fi
+
           if [ -z "$PROJECT" ]; then
             echo "ERROR: Abir AI project not found"
+            echo ""
+            echo "package.json files:"
             find extracted -name package.json -print
             exit 1
           fi
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
-          echo "Found project:"
+          echo ""
+          echo "========== PROJECT =========="
           echo "$PROJECT"
+          echo "============================="
 
+      # ---------------------------------------------------------
+      # Install dependencies
+      # ---------------------------------------------------------
       - name: Install dependencies
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -84,7 +127,7 @@ jobs:
             --allow-build=esbuild
 
       # ---------------------------------------------------------
-      # FIX 1: Launcher Gradle version
+      # FIX 1: Launcher Gradle
       # ---------------------------------------------------------
       - name: Fix launcher Gradle
         working-directory: ${{ env.PROJECT }}
@@ -107,59 +150,40 @@ jobs:
           p = Path(sys.argv[1])
           s = p.read_text(encoding="utf-8")
 
-          # Ensure android block exists
           if not re.search(r'^\s*android\s*\{', s, re.MULTILINE):
               raise SystemExit("ERROR: android { block not found")
 
-          # If defaultConfig exists, update it.
-          # Otherwise insert a new defaultConfig inside android.
+          # Remove existing version declarations first.
+          s = re.sub(
+              r'^\s*versionCode\s+\d+\s*$\n?',
+              '',
+              s,
+              flags=re.MULTILINE
+          )
+
+          s = re.sub(
+              r'^\s*versionName\s+"[^"]*"\s*$\n?',
+              '',
+              s,
+              flags=re.MULTILINE
+          )
+
+          # Add a clean defaultConfig if necessary.
           if re.search(r'^\s*defaultConfig\s*\{', s, re.MULTILINE):
               s = re.sub(
-                  r'(\bdefaultConfig\s*\{)',
-                  r'\1\n        versionCode 16\n        versionName "3.7.0"',
+                  r'(^\s*defaultConfig\s*\{)',
+                  r'\1\n        versionCode 21\n        versionName "4.1.0"',
                   s,
-                  count=1
+                  count=1,
+                  flags=re.MULTILINE
               )
-
-              # Remove duplicate versionCode/versionName lines created
-              # by previous workflow runs, then keep the first correct pair.
-              lines = s.splitlines()
-              out = []
-              seen_code = False
-              seen_name = False
-
-              for line in lines:
-                  if re.search(r'^\s*versionCode\s+', line):
-                      if seen_code:
-                          continue
-                      line = re.sub(
-                          r'versionCode\s+\d+',
-                          'versionCode 16',
-                          line
-                      )
-                      seen_code = True
-
-                  if re.search(r'^\s*versionName\s+', line):
-                      if seen_name:
-                          continue
-                      line = re.sub(
-                          r'versionName\s+"[^"]*"',
-                          'versionName "3.7.0"',
-                          line
-                      )
-                      seen_name = True
-
-                  out.append(line)
-
-              s = "\n".join(out) + "\n"
-
           else:
               s = re.sub(
                   r'(^\s*android\s*\{)',
                   r'''\1
               defaultConfig {
-                  versionCode 16
-                  versionName "3.7.0"
+                  versionCode 21
+                  versionName "4.1.0"
               }''',
                   s,
                   count=1,
@@ -169,6 +193,7 @@ jobs:
           p.write_text(s, encoding="utf-8")
           PY
 
+          echo ""
           echo "========== Launcher Gradle =========="
           cat "$FILE"
           echo "====================================="
@@ -196,7 +221,7 @@ jobs:
           echo "Contacts Kotlin checked."
 
       # ---------------------------------------------------------
-      # Accessibility compatibility
+      # FIX 3: Accessibility Kotlin compatibility
       # ---------------------------------------------------------
       - name: Fix Accessibility Kotlin
         working-directory: ${{ env.PROJECT }}
@@ -206,15 +231,35 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAccessibilityService.kt"
 
-          if [ -f "$FILE" ]; then
-            sed -i 's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
-            sed -i 's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
-            sed -i 's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
-
-            sed -i 's/AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED/32/g' "$FILE"
-            sed -i 's/AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED/2048/g' "$FILE"
-            sed -i 's/AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED/16/g' "$FILE"
+          if [ ! -f "$FILE" ]; then
+            echo "WARNING: Accessibility Kotlin file not found."
+            exit 0
           fi
+
+          # Android accessibility event constants
+          sed -i \
+            's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' \
+            "$FILE"
+
+          sed -i \
+            's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' \
+            "$FILE"
+
+          sed -i \
+            's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' \
+            "$FILE"
+
+          sed -i \
+            's/AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED/32/g' \
+            "$FILE"
+
+          sed -i \
+            's/AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED/2048/g' \
+            "$FILE"
+
+          sed -i \
+            's/AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED/16/g' \
+            "$FILE"
 
           echo "Accessibility Kotlin checked."
 
@@ -269,7 +314,7 @@ jobs:
           echo "============================================"
 
       # ---------------------------------------------------------
-      # App version
+      # App version 4.1.0
       # ---------------------------------------------------------
       - name: Fix app version
         working-directory: ${{ env.PROJECT }}
@@ -277,6 +322,7 @@ jobs:
         run: |
           set -e
 
+          # Android Gradle
           if [ -f android/app/build.gradle ]; then
             python3 - <<'PY'
           from pathlib import Path
@@ -287,14 +333,14 @@ jobs:
 
           s = re.sub(
               r'versionCode\s+\d+',
-              'versionCode 16',
+              'versionCode 21',
               s,
               count=1
           )
 
           s = re.sub(
               r'versionName\s+"[^"]*"',
-              'versionName "3.7.0"',
+              'versionName "4.1.0"',
               s,
               count=1
           )
@@ -303,18 +349,78 @@ jobs:
           PY
           fi
 
+          # Expo app.json
           if [ -f app.json ]; then
             sed -i \
-              's/"version": "[^"]*"/"version": "3.7.0"/' \
+              's/"version": "[^"]*"/"version": "4.1.0"/' \
               app.json
           fi
 
-          echo "App version fixed to 3.7.0."
+          echo "App version fixed to 4.1.0."
 
       # ---------------------------------------------------------
-      # Final verification
+      # Verify important 4.1.0 features
       # ---------------------------------------------------------
-      - name: Final source verification
+      - name: Verify Abir AI 4.1.0 features
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "========== Feature Verification =========="
+
+          # Offline brain
+          if [ -f assistant/offlineBrain.ts ]; then
+            echo "OK: Offline brain found"
+          else
+            echo "WARNING: offlineBrain.ts not found"
+          fi
+
+          # Intent parser
+          if [ -f assistant/intentParser.ts ]; then
+            echo "OK: Intent parser found"
+          else
+            echo "WARNING: intentParser.ts not found"
+          fi
+
+          # Universal screen control
+          if grep -Rqs \
+            "universalSearch\|typeText\|tapText\|scroll" \
+            assistant modules; then
+            echo "OK: Universal screen control detected"
+          else
+            echo "WARNING: Universal screen control not detected"
+          fi
+
+          # Power control
+          if grep -Rqs \
+            "volume\|flashlight\|screenshot\|quickSettings" \
+            assistant modules; then
+            echo "OK: Power control detected"
+          else
+            echo "WARNING: Power control not detected"
+          fi
+
+          # Gemini
+          if [ -f assistant/onlineAssistant.ts ]; then
+            echo "OK: Online Gemini assistant found"
+          else
+            echo "WARNING: onlineAssistant.ts not found"
+          fi
+
+          # Wake word
+          if find modules -name "WakeWordService.kt" -print -quit | grep -q .; then
+            echo "OK: Wake word service found"
+          else
+            echo "WARNING: Wake word service not found"
+          fi
+
+          echo "=========================================="
+
+      # ---------------------------------------------------------
+      # Final Kotlin verification
+      # ---------------------------------------------------------
+      - name: Final Kotlin verification
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
@@ -360,7 +466,7 @@ jobs:
           echo "========================================"
 
       # ---------------------------------------------------------
-      # Gradle
+      # Prepare Gradle
       # ---------------------------------------------------------
       - name: Prepare Gradle
         working-directory: ${{ env.PROJECT }}/android
@@ -370,12 +476,15 @@ jobs:
 
           chmod +x gradlew
 
+          echo "========== Java =========="
           java -version
 
+          echo ""
+          echo "========== Gradle =========="
           ./gradlew --version
 
       # ---------------------------------------------------------
-      # Build APK
+      # Build Release APK
       # ---------------------------------------------------------
       - name: Build Release APK
         working-directory: ${{ env.PROJECT }}/android
@@ -390,11 +499,15 @@ jobs:
           echo "========== Cleaning =========="
           ./gradlew clean --no-daemon
 
-          echo "========== Building Release APK =========="
+          echo ""
+          echo "========== Building Abir AI 4.1.0 =========="
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
             --stacktrace
+
+          echo ""
+          echo "========== Build completed =========="
 
       # ---------------------------------------------------------
       # Find APK
@@ -412,6 +525,7 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: Release APK not found"
+            echo ""
             echo "Available APK files:"
             find android -type f -name "*.apk" -print
             exit 1
@@ -420,11 +534,11 @@ jobs:
           mkdir -p release
 
           cp "$APK" \
-            release/Abir-AI-3.7.0-release.apk
+            release/Abir-AI-4.1.0-release.apk
 
           echo ""
           echo "========== APK =========="
-          ls -lh release/Abir-AI-3.7.0-release.apk
+          ls -lh release/Abir-AI-4.1.0-release.apk
           echo "========================="
 
       # ---------------------------------------------------------
@@ -433,6 +547,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-3.7.0-release
-          path: ${{ env.PROJECT }}/release/Abir-AI-3.7.0-release.apk
+          name: Abir-AI-4.1.0-release
+          path: ${{ env.PROJECT }}/release/Abir-AI-4.1.0-release.apk
           if-no-files-found: error
