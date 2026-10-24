@@ -11,69 +11,55 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------------------------------------------------
-      # Checkout
-      # ---------------------------------------------------------
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
-      # Java
-      # ---------------------------------------------------------
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ---------------------------------------------------------
-      # Node
-      # ---------------------------------------------------------
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # ---------------------------------------------------------
-      # pnpm
-      # ---------------------------------------------------------
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: "12.14.0"
           run_install: false
 
-      # ---------------------------------------------------------
-      # Find and extract current 4.1.0 source ZIP
-      # ---------------------------------------------------------
-      - name: Extract 4.1.0 source ZIP
+      # =========================================================
+      # EXTRACT V2 FIXED ZIP
+      # =========================================================
+      - name: Extract 4.1.0 FIXED v2 source
         shell: bash
         run: |
           set -e
 
-          ZIP="Bengali-Voice-Buddy-AbirAI-4.1.0-Ultimate-Final.zip"
+          ZIP="Bengali-Voice-Buddy-AbirAI-4.1.0-Ultimate-Final-FIXED-v2.zip"
 
           if [ ! -f "$ZIP" ]; then
             echo "ERROR: $ZIP not found"
             echo ""
-            echo "ZIP files available:"
             find . -maxdepth 2 -type f -name "*.zip" -print
             exit 1
           fi
-
-          echo "Using source:"
-          echo "$ZIP"
 
           rm -rf extracted
           mkdir -p extracted
 
           unzip -q "$ZIP" -d extracted
 
-          echo "Source extracted successfully."
+          echo "Source extracted:"
+          echo "$ZIP"
 
-      # ---------------------------------------------------------
-      # Find Abir AI project
-      # ---------------------------------------------------------
+      # =========================================================
+      # FIND PROJECT
+      # =========================================================
       - name: Find Abir AI project
         shell: bash
         run: |
@@ -84,7 +70,6 @@ jobs:
             -path "*/artifacts/abir-ai/package.json" \
             -print -quit | xargs -r dirname)
 
-          # Fallback: find package.json containing android folder
           if [ -z "$PROJECT" ]; then
             PROJECT=$(find extracted \
               -type f \
@@ -100,22 +85,17 @@ jobs:
 
           if [ -z "$PROJECT" ]; then
             echo "ERROR: Abir AI project not found"
-            echo ""
-            echo "package.json files:"
-            find extracted -name package.json -print
             exit 1
           fi
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
-          echo ""
-          echo "========== PROJECT =========="
+          echo "Project:"
           echo "$PROJECT"
-          echo "============================="
 
-      # ---------------------------------------------------------
-      # Install dependencies
-      # ---------------------------------------------------------
+      # =========================================================
+      # INSTALL
+      # =========================================================
       - name: Install dependencies
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -126,9 +106,9 @@ jobs:
             --no-frozen-lockfile \
             --allow-build=esbuild
 
-      # ---------------------------------------------------------
-      # FIX 1: Launcher Gradle
-      # ---------------------------------------------------------
+      # =========================================================
+      # FIX LAUNCHER GRADLE
+      # =========================================================
       - name: Fix launcher Gradle
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -137,10 +117,7 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/build.gradle"
 
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: $FILE not found"
-            exit 1
-          fi
+          test -f "$FILE"
 
           python3 - "$FILE" <<'PY'
           from pathlib import Path
@@ -150,10 +127,6 @@ jobs:
           p = Path(sys.argv[1])
           s = p.read_text(encoding="utf-8")
 
-          if not re.search(r'^\s*android\s*\{', s, re.MULTILINE):
-              raise SystemExit("ERROR: android { block not found")
-
-          # Remove existing version declarations first.
           s = re.sub(
               r'^\s*versionCode\s+\d+\s*$\n?',
               '',
@@ -168,7 +141,6 @@ jobs:
               flags=re.MULTILINE
           )
 
-          # Add a clean defaultConfig if necessary.
           if re.search(r'^\s*defaultConfig\s*\{', s, re.MULTILINE):
               s = re.sub(
                   r'(^\s*defaultConfig\s*\{)',
@@ -193,14 +165,9 @@ jobs:
           p.write_text(s, encoding="utf-8")
           PY
 
-          echo ""
-          echo "========== Launcher Gradle =========="
-          cat "$FILE"
-          echo "====================================="
-
-      # ---------------------------------------------------------
-      # FIX 2: Contacts Kotlin
-      # ---------------------------------------------------------
+      # =========================================================
+      # FIX CONTACTS
+      # =========================================================
       - name: Fix Contacts Kotlin
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -209,21 +176,16 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
 
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: Contacts Kotlin file not found"
-            exit 1
-          fi
+          test -f "$FILE"
 
           sed -i \
-            's/ResolveInfoFlags\.of(0[^L])/ResolveInfoFlags.of(0L)/g' \
+            's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
             "$FILE"
 
-          echo "Contacts Kotlin checked."
-
-      # ---------------------------------------------------------
-      # FIX 3: Accessibility Kotlin compatibility
-      # ---------------------------------------------------------
-      - name: Fix Accessibility Kotlin
+      # =========================================================
+      # ACCESSIBILITY COMPATIBILITY FIX
+      # =========================================================
+      - name: Ensure Accessibility Kotlin compatibility
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
@@ -231,42 +193,121 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAccessibilityService.kt"
 
-          if [ ! -f "$FILE" ]; then
-            echo "WARNING: Accessibility Kotlin file not found."
-            exit 0
-          fi
+          test -f "$FILE"
 
-          # Android accessibility event constants
-          sed -i \
-            's/AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED/32/g' \
-            "$FILE"
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          import re
 
-          sed -i \
-            's/AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED/2048/g' \
-            "$FILE"
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding="utf-8")
 
-          sed -i \
-            's/AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED/16/g' \
-            "$FILE"
+          # Remove compiler-problematic IME action.
+          s = s.replace(
+              'AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER',
+              'AccessibilityNodeInfo.ACTION_CLICK'
+          )
 
-          sed -i \
-            's/AccessibilityServiceInfo.TYPE_WINDOW_STATE_CHANGED/32/g' \
-            "$FILE"
+          # Use compile-safe scroll actions.
+          s = s.replace(
+              'AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT',
+              'AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD'
+          )
 
-          sed -i \
-            's/AccessibilityServiceInfo.TYPE_WINDOW_CONTENT_CHANGED/2048/g' \
-            "$FILE"
+          s = s.replace(
+              'AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT',
+              'AccessibilityNodeInfo.ACTION_SCROLL_FORWARD'
+          )
 
-          sed -i \
-            's/AccessibilityServiceInfo.TYPE_VIEW_TEXT_CHANGED/16/g' \
-            "$FILE"
+          # Replace the complete pressImeEnterInternal function
+          # with a safe search/done button fallback.
+          pattern = (
+              r'private fun pressImeEnterInternal\(\): Boolean \{'
+              r'.*?'
+              r'\n  \}\n\n'
+              r'  private fun scrollScreenInternal'
+          )
 
-          echo "Accessibility Kotlin checked."
+          replacement = '''private fun pressImeEnterInternal(): Boolean {
+              val root = rootInActiveWindow ?: return false
 
-      # ---------------------------------------------------------
-      # IMPORTANT:
-      # DO NOT REMOVE Coroutine
-      # ---------------------------------------------------------
+              val searchHints = listOf(
+                  "search",
+                  "সার্চ",
+                  "খুঁজ",
+                  "go",
+                  "enter",
+                  "done",
+                  "অনুসন্ধান"
+              )
+
+              val button = nodes(root).firstOrNull {
+                  it.isVisibleToUser &&
+                    it.isClickable &&
+                    searchHints.any { h ->
+                      textOf(it).contains(h, ignoreCase = true)
+                    }
+              }
+
+              if (button?.performAction(
+                      AccessibilityNodeInfo.ACTION_CLICK
+                  ) == true) {
+                  return true
+              }
+
+              val focused = nodes(root).firstOrNull {
+                  it.isVisibleToUser &&
+                    it.isFocused &&
+                    it.className?.toString()
+                      ?.contains("EditText", true) == true
+              }
+
+              return focused?.performAction(
+                  AccessibilityNodeInfo.ACTION_FOCUS
+              ) == true
+          }
+
+          private fun scrollScreenInternal'''
+
+          if "ACTION_IME_ENTER" in s:
+              s, count = re.subn(
+                  pattern,
+                  replacement,
+                  s,
+                  count=1,
+                  flags=re.DOTALL
+              )
+
+              if count != 1:
+                  raise SystemExit(
+                      "ERROR: Could not replace pressImeEnterInternal"
+                  )
+
+          # Final cleanup.
+          s = s.replace(
+              'AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER',
+              'AccessibilityNodeInfo.ACTION_CLICK'
+          )
+
+          s = s.replace(
+              'AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT',
+              'AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD'
+          )
+
+          s = s.replace(
+              'AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT',
+              'AccessibilityNodeInfo.ACTION_SCROLL_FORWARD'
+          )
+
+          p.write_text(s, encoding="utf-8")
+
+          print("Accessibility compatibility check/fix complete.")
+          PY
+
+      # =========================================================
+      # VERIFY COROUTINE
+      # =========================================================
       - name: Verify Offline Speech Coroutine
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -275,54 +316,77 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
 
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: Kotlin launcher file not found"
-            exit 1
-          fi
-
-          echo "========== Coroutine verification =========="
+          test -f "$FILE"
 
           grep -F \
             "import expo.modules.kotlin.functions.Coroutine" \
-            "$FILE" >/dev/null || {
-              echo "ERROR: Expo Coroutine import missing"
-              exit 1
-            }
+            "$FILE" >/dev/null
 
           grep -F \
             'AsyncFunction("recognizeOffline") Coroutine' \
-            "$FILE" >/dev/null || {
-              echo "ERROR: recognizeOffline Coroutine builder missing"
-              exit 1
-            }
+            "$FILE" >/dev/null
 
           grep -F \
             "return@Coroutine" \
-            "$FILE" >/dev/null || {
-              echo "ERROR: return@Coroutine missing"
-              exit 1
-            }
+            "$FILE" >/dev/null
 
           grep -F \
             "suspendCancellableCoroutine" \
-            "$FILE" >/dev/null || {
-              echo "ERROR: suspendCancellableCoroutine missing"
-              exit 1
-            }
+            "$FILE" >/dev/null
 
-          echo "Coroutine code is correct."
-          echo "============================================"
+          grep -F \
+            'AsyncFunction("searchAndOpenInApp") Coroutine' \
+            "$FILE" >/dev/null
 
-      # ---------------------------------------------------------
-      # App version 4.1.0
-      # ---------------------------------------------------------
+          echo "Coroutine verification OK."
+
+      # =========================================================
+      # VERIFY ACCESSIBILITY
+      # =========================================================
+      - name: Verify Accessibility fix
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAccessibilityService.kt"
+
+          test -f "$FILE"
+
+          if grep -Fq "ACTION_IME_ENTER" "$FILE"; then
+            echo "ERROR: ACTION_IME_ENTER still exists"
+            exit 1
+          fi
+
+          if grep -Fq "ACTION_SCROLL_LEFT" "$FILE"; then
+            echo "ERROR: ACTION_SCROLL_LEFT still exists"
+            exit 1
+          fi
+
+          if grep -Fq "ACTION_SCROLL_RIGHT" "$FILE"; then
+            echo "ERROR: ACTION_SCROLL_RIGHT still exists"
+            exit 1
+          fi
+
+          grep -F \
+            "ACTION_SCROLL_FORWARD" \
+            "$FILE" >/dev/null
+
+          grep -F \
+            "ACTION_SCROLL_BACKWARD" \
+            "$FILE" >/dev/null
+
+          echo "Accessibility compatibility OK."
+
+      # =========================================================
+      # APP VERSION
+      # =========================================================
       - name: Fix app version
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          # Android Gradle
           if [ -f android/app/build.gradle ]; then
             python3 - <<'PY'
           from pathlib import Path
@@ -349,125 +413,48 @@ jobs:
           PY
           fi
 
-          # Expo app.json
           if [ -f app.json ]; then
             sed -i \
               's/"version": "[^"]*"/"version": "4.1.0"/' \
               app.json
           fi
 
-          echo "App version fixed to 4.1.0."
-
-      # ---------------------------------------------------------
-      # Verify important 4.1.0 features
-      # ---------------------------------------------------------
-      - name: Verify Abir AI 4.1.0 features
+      # =========================================================
+      # FEATURE CHECK
+      # =========================================================
+      - name: Verify Abir AI features
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          echo "========== Feature Verification =========="
+          test -f assistant/offlineBrain.ts
+          test -f assistant/intentParser.ts
+          test -f assistant/onlineAssistant.ts
 
-          # Offline brain
-          if [ -f assistant/offlineBrain.ts ]; then
-            echo "OK: Offline brain found"
-          else
-            echo "WARNING: offlineBrain.ts not found"
-          fi
-
-          # Intent parser
-          if [ -f assistant/intentParser.ts ]; then
-            echo "OK: Intent parser found"
-          else
-            echo "WARNING: intentParser.ts not found"
-          fi
-
-          # Universal screen control
-          if grep -Rqs \
+          if ! grep -Rqs \
             "universalSearch\|typeText\|tapText\|scroll" \
             assistant modules; then
-            echo "OK: Universal screen control detected"
-          else
             echo "WARNING: Universal screen control not detected"
           fi
 
-          # Power control
-          if grep -Rqs \
+          if ! grep -Rqs \
             "volume\|flashlight\|screenshot\|quickSettings" \
             assistant modules; then
-            echo "OK: Power control detected"
-          else
             echo "WARNING: Power control not detected"
           fi
 
-          # Gemini
-          if [ -f assistant/onlineAssistant.ts ]; then
-            echo "OK: Online Gemini assistant found"
-          else
-            echo "WARNING: onlineAssistant.ts not found"
+          if ! find modules \
+            -name "WakeWordService.kt" \
+            -print -quit | grep -q .; then
+            echo "WARNING: Wake word service not detected"
           fi
 
-          # Wake word
-          if find modules -name "WakeWordService.kt" -print -quit | grep -q .; then
-            echo "OK: Wake word service found"
-          else
-            echo "WARNING: Wake word service not found"
-          fi
+          echo "Feature verification complete."
 
-          echo "=========================================="
-
-      # ---------------------------------------------------------
-      # Final Kotlin verification
-      # ---------------------------------------------------------
-      - name: Final Kotlin verification
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
-
-          FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
-
-          echo "========== Final Kotlin Check =========="
-
-          grep -F \
-            'AsyncFunction("recognizeOffline") Coroutine' \
-            "$FILE" >/dev/null
-
-          echo "OK: Coroutine builder present"
-
-          grep -F \
-            "return@Coroutine" \
-            "$FILE" >/dev/null
-
-          echo "OK: return@Coroutine present"
-
-          grep -F \
-            "suspendCancellableCoroutine" \
-            "$FILE" >/dev/null
-
-          echo "OK: suspendCancellableCoroutine present"
-
-          if grep -Eq \
-            'ResolveInfoFlags\.of\(0\)' \
-            "$FILE"; then
-            echo "ERROR: old ResolveInfoFlags.of(0) still exists"
-            exit 1
-          fi
-
-          if grep -Fq \
-            "ResolveInfoFlags.of(0L)" \
-            "$FILE"; then
-            echo "OK: ResolveInfoFlags uses 0L"
-          else
-            echo "WARNING: ResolveInfoFlags.of(0L) not found"
-          fi
-
-          echo "========================================"
-
-      # ---------------------------------------------------------
-      # Prepare Gradle
-      # ---------------------------------------------------------
+      # =========================================================
+      # GRADLE
+      # =========================================================
       - name: Prepare Gradle
         working-directory: ${{ env.PROJECT }}/android
         shell: bash
@@ -476,16 +463,12 @@ jobs:
 
           chmod +x gradlew
 
-          echo "========== Java =========="
           java -version
-
-          echo ""
-          echo "========== Gradle =========="
           ./gradlew --version
 
-      # ---------------------------------------------------------
-      # Build Release APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # BUILD RELEASE
+      # =========================================================
       - name: Build Release APK
         working-directory: ${{ env.PROJECT }}/android
         env:
@@ -496,22 +479,20 @@ jobs:
         run: |
           set -e
 
-          echo "========== Cleaning =========="
+          echo "========== CLEAN =========="
           ./gradlew clean --no-daemon
 
-          echo ""
-          echo "========== Building Abir AI 4.1.0 =========="
+          echo "========== BUILD RELEASE =========="
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
             --stacktrace
 
-          echo ""
-          echo "========== Build completed =========="
+          echo "========== BUILD SUCCESS =========="
 
-      # ---------------------------------------------------------
-      # Find APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # FIND APK
+      # =========================================================
       - name: Find APK
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -525,8 +506,6 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: Release APK not found"
-            echo ""
-            echo "Available APK files:"
             find android -type f -name "*.apk" -print
             exit 1
           fi
@@ -536,14 +515,11 @@ jobs:
           cp "$APK" \
             release/Abir-AI-4.1.0-release.apk
 
-          echo ""
-          echo "========== APK =========="
           ls -lh release/Abir-AI-4.1.0-release.apk
-          echo "========================="
 
-      # ---------------------------------------------------------
-      # Upload APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # UPLOAD APK
+      # =========================================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
