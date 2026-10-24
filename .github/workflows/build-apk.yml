@@ -1,4 +1,4 @@
-name: Build Abir AI 4.5.0 APK
+name: Build Abir AI 4.5.1 APK
 
 on:
   workflow_dispatch:
@@ -44,6 +44,7 @@ jobs:
 
       # 5. Verify Node / pnpm
       - name: Verify tools
+        shell: bash
         run: |
           set -e
 
@@ -65,28 +66,30 @@ jobs:
           java-version: "17"
 
 
-      # 7. Android SDK
-      # Do NOT use android-actions/setup-android here.
-      # GitHub runner already contains Android SDK.
+      # 7. Android SDK environment
       - name: Setup Android environment
         shell: bash
         run: |
           set -e
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
           if [ -z "$ANDROID_HOME" ]; then
-            export ANDROID_HOME="/usr/local/lib/android/sdk"
             echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+            export ANDROID_HOME="/usr/local/lib/android/sdk"
           fi
 
           if [ -z "$ANDROID_SDK_ROOT" ]; then
-            export ANDROID_SDK_ROOT="$ANDROID_HOME"
             echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+            export ANDROID_SDK_ROOT="$ANDROID_HOME"
           fi
 
-          echo "Android SDK:"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          if [ ! -d "$ANDROID_HOME" ]; then
+            echo "ERROR: Android SDK not found."
+            exit 1
+          fi
+
           ls -la "$ANDROID_HOME"
 
 
@@ -98,97 +101,90 @@ jobs:
 
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
             -type f \
-            -name sdkmanager \
+            -name "sdkmanager" \
             | sort -V \
             | tail -n 1)
 
           if [ -z "$SDKMANAGER" ]; then
             echo "ERROR: sdkmanager not found."
+            find "$ANDROID_HOME" -type f -name "sdkmanager" -print
             exit 1
           fi
 
+          chmod +x "$SDKMANAGER"
+
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
-          echo "Using:"
+          echo "Using sdkmanager:"
           echo "$SDKMANAGER"
 
           "$SDKMANAGER" --version
 
 
-      # 9. Accept ALL Android SDK licenses
+      # 9. Accept Android SDK licenses
       - name: Accept Android SDK licenses
         shell: bash
         run: |
+          set +e
+
+          echo "Accepting Android SDK licenses..."
+
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
+            --licenses
+
+          STATUS=$?
+
           set -e
 
-          mkdir -p "$ANDROID_HOME/licenses"
+          if [ "$STATUS" -ne 0 ]; then
+            echo "sdkmanager --licenses returned $STATUS."
+            echo "Continuing; required packages will verify licenses."
+          fi
 
-          # Standard Android SDK license hashes
-          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" \
-            > "$ANDROID_HOME/licenses/android-sdk-license"
-
-          echo "84831b940d6a8f3e8b0b7c7c6f7c7f7c" \
-            >> "$ANDROID_HOME/licenses/android-sdk-license"
-
-          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" \
-            >> "$ANDROID_HOME/licenses/android-sdk-license"
-
-          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
-            >> "$ANDROID_HOME/licenses/android-sdk-license"
-
-          echo "2f9d4f5f3f7f5c7d9f2c8f6f0a6f8b9e6d5c4b3a" \
-            >> "$ANDROID_HOME/licenses/android-sdk-license"
-
-          # Additional known licenses
-          echo "d975f6f3f9f7f4c7e4f7f0c8f4d5e8f0c8f7d6e5" \
-            > "$ANDROID_HOME/licenses/android-googletv-license"
-
-          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" \
-            > "$ANDROID_HOME/licenses/android-sdk-arm-dbt-license"
-
-          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" \
-            > "$ANDROID_HOME/licenses/android-googlexr-license"
-
-          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" \
-            > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-
-          echo "Android licenses prepared."
+          echo "License step completed."
 
 
-      # 10. Install only required Android packages
+      # 10. Install Android SDK packages
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -e
 
-          echo "Installing required Android packages..."
+          echo "Installing Android SDK packages..."
 
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+          echo ""
+          echo "Installed SDK packages:"
+          "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
+            --list_installed
 
-      # 11. Find Abir AI ZIP
+
+      # 11. Find Abir AI 4.5.1 ZIP
       - name: Find Abir AI ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP="AbirAI-4.5.0-All-Features-Audit-Final.zip"
+          ZIP="AbirAI-4.5.1-Fixed.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "ERROR: ZIP not found:"
-            echo "$ZIP"
+            echo "ERROR: Abir AI 4.5.1 ZIP not found."
 
             echo ""
             echo "Available ZIP files:"
-            find . -maxdepth 4 -type f -name "*.zip" -print
+            find . -maxdepth 5 -type f -name "*.zip" -print
 
             exit 1
           fi
 
-          echo "Found:"
+          echo "Found ZIP:"
           ls -lh "$ZIP"
 
 
@@ -199,18 +195,19 @@ jobs:
           set -e
 
           rm -rf extracted
-
           mkdir -p extracted
 
           unzip -q \
-            "AbirAI-4.5.0-All-Features-Audit-Final.zip" \
+            "AbirAI-4.5.1-Fixed.zip" \
             -d extracted
 
-          echo "Project structure:"
-          find extracted -maxdepth 3 -type f \
+          echo ""
+          echo "Extracted project files:"
+          find extracted -maxdepth 4 -type f \
             \( \
               -name "package.json" \
               -o -name "app.json" \
+              -o -name "pnpm-lock.yaml" \
               -o -name "gradlew" \
             \) \
             -print
@@ -222,51 +219,76 @@ jobs:
         run: |
           set -e
 
-          if [ -f "extracted/src/app.json" ]; then
-            PROJECT="extracted/src"
+          PROJECT=""
 
-          elif [ -f "extracted/app.json" ]; then
+          # Normal root project
+          if [ -f "extracted/app.json" ] && \
+             [ -f "extracted/package.json" ]; then
             PROJECT="extracted"
 
-          else
-            echo "ERROR: app.json not found."
+          # Project inside one folder
+          elif [ -f "extracted/src/app.json" ] && \
+               [ -f "extracted/src/package.json" ]; then
+            PROJECT="extracted/src"
 
-            find extracted -maxdepth 4 -type f -name "app.json" -print
+          else
+            PROJECT=$(find extracted \
+              -type f \
+              -name "app.json" \
+              -print \
+              | head -n 1 \
+              | xargs -r dirname)
+
+            if [ -n "$PROJECT" ] && \
+               [ ! -f "$PROJECT/package.json" ]; then
+              PROJECT=""
+            fi
+          fi
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: Abir AI project directory not found."
+
+            echo ""
+            echo "app.json files:"
+            find extracted -type f -name "app.json" -print
+
+            echo ""
+            echo "package.json files:"
+            find extracted -type f -name "package.json" -print
 
             exit 1
           fi
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
+          echo ""
           echo "Using project:"
           echo "$PROJECT"
 
 
-      # 14. Install dependencies
-      - name: Install dependencies
+      # 14. Verify project
+      - name: Verify project files
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          if [ -f "pnpm-lock.yaml" ]; then
-            pnpm install --frozen-lockfile
+          echo "Project directory:"
+          pwd
 
-          elif [ -f "package.json" ]; then
-            pnpm install
+          echo ""
+          echo "Project files:"
+          ls -la
 
-          else
-            echo "ERROR: package.json not found."
+          if [ ! -f "package.json" ]; then
+            echo "ERROR: package.json missing."
             exit 1
           fi
 
-
-      # 15. Verify Android project
-      - name: Verify Android project
-        working-directory: ${{ env.PROJECT }}
-        shell: bash
-        run: |
-          set -e
+          if [ ! -f "app.json" ]; then
+            echo "ERROR: app.json missing."
+            exit 1
+          fi
 
           if [ ! -d "android" ]; then
             echo "ERROR: android directory missing."
@@ -278,22 +300,110 @@ jobs:
             exit 1
           fi
 
-          echo "Android project OK."
+          echo ""
+          echo "Project verification OK."
 
 
-      # 16. Make Gradle executable
+      # 15. Install dependencies
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Installing pnpm dependencies..."
+
+          if [ -f "pnpm-lock.yaml" ]; then
+            pnpm install \
+              --frozen-lockfile \
+              --allow-build=esbuild
+          else
+            pnpm install \
+              --allow-build=esbuild
+          fi
+
+          echo ""
+          echo "Dependencies installed successfully."
+
+
+      # 16. Verify dependency tree
+      - name: Verify dependencies
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking TanStack Query:"
+          pnpm list @tanstack/react-query --depth 0 || true
+
+          echo ""
+          echo "Checking Zod:"
+          pnpm list zod --depth 0 || true
+
+          echo ""
+          echo "Dependency verification complete."
+
+
+      # 17. Fix native Kotlin compatibility
+      - name: Fix native Kotlin compatibility
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
+
+          if [ -f "$FILE" ]; then
+            sed -i 's/ResolveInfoFlags.of(0)/ResolveInfoFlags.of(0L)/g' "$FILE"
+            echo "Kotlin compatibility fix applied."
+          fi
+
+
+      # 18. Verify Accessibility Kotlin
+      - name: Verify Accessibility Kotlin
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAccessibilityService.kt"
+
+          if [ -f "$FILE" ]; then
+            echo "Accessibility service found:"
+            echo "$FILE"
+
+            grep -n "screenSnapshot" "$FILE" || true
+            grep -n "pressImeEnter" "$FILE" || true
+            grep -n "scrollScreen" "$FILE" || true
+          else
+            echo "WARNING: Accessibility service source not found."
+          fi
+
+
+      # 19. Prepare Gradle
       - name: Prepare Gradle
         working-directory: ${{ env.PROJECT }}/android
         shell: bash
         run: |
+          set -e
+
           chmod +x gradlew
 
+          echo "Gradle wrapper ready."
 
-      # 17. Show versions
+
+      # 20. Check build environment
       - name: Check build environment
         working-directory: ${{ env.PROJECT }}/android
         shell: bash
         run: |
+          set -e
+
+          echo "======================================"
+          echo "BUILD ENVIRONMENT"
+          echo "======================================"
+
+          echo ""
           echo "Java:"
           java -version
 
@@ -302,19 +412,29 @@ jobs:
           ./gradlew --version
 
           echo ""
-          echo "Android:"
+          echo "Android SDK:"
+          echo "$ANDROID_HOME"
+
+          echo ""
+          echo "SDK Manager:"
           "$SDKMANAGER" --version
 
+          echo ""
+          echo "======================================"
 
-      # 18. Build APK
-      - name: Build Abir AI Release APK
+
+      # 21. Build Release APK
+      - name: Build Abir AI 4.5.1 Release APK
         working-directory: ${{ env.PROJECT }}/android
         shell: bash
+        env:
+          EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EXPO_PUBLIC_GEMINI_MODEL: gemini-2.5-flash
         run: |
           set -e
 
           echo "======================================"
-          echo "Building Abir AI 4.5.0"
+          echo "BUILDING ABIR AI 4.5.1"
           echo "======================================"
 
           ./gradlew \
@@ -322,23 +442,26 @@ jobs:
             --no-daemon \
             --stacktrace
 
+          echo ""
+          echo "Gradle build completed."
 
-      # 19. Find APK
+
+      # 22. Find generated APK
       - name: Find generated APK
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
-          echo "Searching APK..."
+          echo "Searching for APK..."
 
-          find android/app/build/outputs/apk \
+          find android \
             -type f \
             -name "*.apk" \
             -print
 
 
-      # 20. Prepare APK
+      # 23. Prepare final APK
       - name: Prepare final APK
         working-directory: ${{ env.PROJECT }}
         shell: bash
@@ -352,7 +475,7 @@ jobs:
             -quit)
 
           if [ -z "$APK" ]; then
-            APK=$(find android/app/build/outputs/apk \
+            APK=$(find android \
               -type f \
               -name "*.apk" \
               -print \
@@ -367,37 +490,40 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/release"
 
           cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Abir-AI-4.5.0-release.apk"
+            "$GITHUB_WORKSPACE/release/Abir-AI-4.5.1-release.apk"
 
           echo ""
-          echo "Final APK:"
+          echo "======================================"
+          echo "FINAL APK"
+          echo "======================================"
+
           ls -lh \
-            "$GITHUB_WORKSPACE/release/Abir-AI-4.5.0-release.apk"
+            "$GITHUB_WORKSPACE/release/Abir-AI-4.5.1-release.apk"
 
 
-      # 21. Upload APK
+      # 24. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-4.5.0-release
-          path: release/Abir-AI-4.5.0-release.apk
+          name: Abir-AI-4.5.1-release
+          path: release/Abir-AI-4.5.1-release.apk
           if-no-files-found: error
           retention-days: 30
 
 
-      # 22. Success
+      # 25. Success
       - name: Build success
         shell: bash
         run: |
           echo ""
           echo "======================================"
-          echo "       ABIR AI 4.5.0 SUCCESS"
+          echo "       ABIR AI 4.5.1 SUCCESS"
           echo "======================================"
           echo ""
-          echo "Version: 4.5.0"
+          echo "Version: 4.5.1"
           echo "Version Code: 23"
           echo ""
           echo "APK:"
-          ls -lh release/Abir-AI-4.5.0-release.apk
+          ls -lh release/Abir-AI-4.5.1-release.apk
           echo ""
           echo "======================================"
