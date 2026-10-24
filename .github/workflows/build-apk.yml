@@ -1,4 +1,4 @@
-name: Build Abir AI 4.1.0 Ultimate
+name: Build Abir AI 4.5.0 Ultimate
 
 on:
   workflow_dispatch:
@@ -34,6 +34,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "pnpm"
 
       # =========================================================
       # PNPM
@@ -45,14 +46,14 @@ jobs:
           run_install: false
 
       # =========================================================
-      # FIND AND EXTRACT SOURCE ZIP
+      # FIND AND EXTRACT 4.5.0 SOURCE ZIP
       # =========================================================
-      - name: Extract Abir AI source
+      - name: Extract Abir AI 4.5.0 source
         shell: bash
         run: |
           set -e
 
-          ZIP="AbirAI-4.1.0-FIXED-v2.zip"
+          ZIP="AbirAI-4.5.0-All-Features-Audit-Final.zip"
 
           echo "Looking for:"
           echo "$ZIP"
@@ -61,7 +62,7 @@ jobs:
             echo ""
             echo "ERROR: Source ZIP not found."
             echo ""
-            echo "ZIP files found in repository:"
+            echo "ZIP files found:"
             find . -maxdepth 3 -type f -name "*.zip" -print
             exit 1
           fi
@@ -72,11 +73,14 @@ jobs:
           unzip -q "$ZIP" -d extracted
 
           echo ""
-          echo "Source extraction successful."
-          echo "ZIP: $ZIP"
+          echo "Extraction successful."
+
+          echo ""
+          echo "Extracted folders:"
+          find extracted -maxdepth 2 -type d -print
 
       # =========================================================
-      # FIND ANDROID PROJECT
+      # FIND PROJECT
       # =========================================================
       - name: Find Abir AI project
         shell: bash
@@ -85,11 +89,14 @@ jobs:
 
           PROJECT=""
 
-          PROJECT=$(find extracted \
-            -type f \
-            -path "*/artifacts/abir-ai/package.json" \
-            -print -quit | xargs -r dirname || true)
+          # Current 4.5.0 ZIP structure:
+          # extracted/src/package.json
+          if [ -f "extracted/src/package.json" ] && \
+             [ -d "extracted/src/android" ]; then
+            PROJECT="extracted/src"
+          fi
 
+          # Fallback: automatically find package.json + android
           if [ -z "$PROJECT" ]; then
             while IFS= read -r PACKAGE; do
               DIR="$(dirname "$PACKAGE")"
@@ -103,16 +110,40 @@ jobs:
 
           if [ -z "$PROJECT" ]; then
             echo "ERROR: Abir AI Android project not found."
+
             echo ""
-            find extracted -maxdepth 5 -type d -name android -print
+            echo "package.json files:"
+            find extracted -type f -name "package.json" -print
+
+            echo ""
+            echo "android folders:"
+            find extracted -type d -name android -print
+
             exit 1
           fi
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Abir AI project:"
+          echo "========================================"
+          echo "ABIR AI PROJECT"
+          echo "========================================"
           echo "$PROJECT"
+
+      # =========================================================
+      # VERIFY PROJECT
+      # =========================================================
+      - name: Verify project structure
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          test -f package.json
+          test -d android
+          test -f android/gradlew
+
+          echo "Project structure OK."
 
       # =========================================================
       # INSTALL DEPENDENCIES
@@ -155,7 +186,7 @@ jobs:
           path = Path(sys.argv[1])
           text = path.read_text(encoding="utf-8")
 
-          # Remove existing versionCode/versionName lines.
+          # Remove old version lines
           text = re.sub(
               r'^\s*versionCode\s+\d+\s*$\n?',
               '',
@@ -170,7 +201,7 @@ jobs:
               flags=re.MULTILINE
           )
 
-          # Insert into existing defaultConfig.
+          # Insert 4.5.0 version
           if re.search(
               r'^\s*defaultConfig\s*\{',
               text,
@@ -178,20 +209,18 @@ jobs:
           ):
               text = re.sub(
                   r'(^\s*defaultConfig\s*\{)',
-                  r'\1\n        versionCode 21\n        versionName "4.1.0"',
+                  r'\1\n        versionCode 23\n        versionName "4.5.0"',
                   text,
                   count=1,
                   flags=re.MULTILINE
               )
-
-          # Otherwise create defaultConfig inside android block.
           else:
               text = re.sub(
                   r'(^\s*android\s*\{)',
                   r'''\1
               defaultConfig {
-                  versionCode 21
-                  versionName "4.1.0"
+                  versionCode 23
+                  versionName "4.5.0"
               }''',
                   text,
                   count=1,
@@ -199,11 +228,12 @@ jobs:
               )
 
           path.write_text(text, encoding="utf-8")
-          print("Launcher Gradle fixed.")
+
+          print("Launcher Gradle fixed for Abir AI 4.5.0.")
           PY
 
       # =========================================================
-      # FIX CONTACTS
+      # FIX CONTACTS KOTLIN
       # =========================================================
       - name: Fix Contacts Kotlin
         working-directory: ${{ env.PROJECT }}
@@ -213,10 +243,7 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
 
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: AbirAppLauncherModule.kt not found."
-            exit 1
-          fi
+          test -f "$FILE"
 
           sed -i \
             's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
@@ -225,7 +252,7 @@ jobs:
           echo "Contacts Kotlin compatibility fixed."
 
       # =========================================================
-      # ACCESSIBILITY COMPATIBILITY
+      # FIX ACCESSIBILITY COMPATIBILITY
       # =========================================================
       - name: Fix Accessibility Kotlin
         working-directory: ${{ env.PROJECT }}
@@ -235,109 +262,16 @@ jobs:
 
           FILE="modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAccessibilityService.kt"
 
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: AbirAccessibilityService.kt not found."
-            exit 1
-          fi
+          test -f "$FILE"
 
           python3 - "$FILE" <<'PY'
           from pathlib import Path
           import sys
-          import re
 
           path = Path(sys.argv[1])
           text = path.read_text(encoding="utf-8")
 
-          # -------------------------------------------------------
-          # Replace unsupported IME accessibility action.
-          # -------------------------------------------------------
-          text = text.replace(
-              "AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER",
-              "AccessibilityNodeInfo.ACTION_CLICK"
-          )
-
-          # -------------------------------------------------------
-          # Replace horizontal scroll AccessibilityAction objects
-          # with compile-safe integer action constants.
-          # -------------------------------------------------------
-          text = text.replace(
-              "AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT",
-              "AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD"
-          )
-
-          text = text.replace(
-              "AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT",
-              "AccessibilityNodeInfo.ACTION_SCROLL_FORWARD"
-          )
-
-          # -------------------------------------------------------
-          # If the original IME function is still present and
-          # contains the problematic action, replace the complete
-          # function with a safe fallback.
-          # -------------------------------------------------------
-          if "ACTION_IME_ENTER" in text:
-              pattern = (
-                  r'private fun pressImeEnterInternal\(\): Boolean \{'
-                  r'.*?'
-                  r'\n  \}\n\n'
-                  r'  private fun scrollScreenInternal'
-              )
-
-              replacement = '''private fun pressImeEnterInternal(): Boolean {
-              val root = rootInActiveWindow ?: return false
-
-              val searchHints = listOf(
-                  "search",
-                  "সার্চ",
-                  "খুঁজ",
-                  "go",
-                  "enter",
-                  "done",
-                  "অনুসন্ধান"
-              )
-
-              val button = nodes(root).firstOrNull {
-                  it.isVisibleToUser &&
-                    it.isClickable &&
-                    searchHints.any { h ->
-                      textOf(it).contains(h, ignoreCase = true)
-                    }
-              }
-
-              if (button?.performAction(
-                      AccessibilityNodeInfo.ACTION_CLICK
-                  ) == true) {
-                  return true
-              }
-
-              val focused = nodes(root).firstOrNull {
-                  it.isVisibleToUser &&
-                    it.isFocused &&
-                    it.className?.toString()
-                      ?.contains("EditText", true) == true
-              }
-
-              return focused?.performAction(
-                  AccessibilityNodeInfo.ACTION_FOCUS
-              ) == true
-          }
-
-          private fun scrollScreenInternal'''
-
-              text, count = re.subn(
-                  pattern,
-                  replacement,
-                  text,
-                  count=1,
-                  flags=re.DOTALL
-              )
-
-              if count != 1:
-                  raise SystemExit(
-                      "ERROR: Could not replace pressImeEnterInternal()."
-                  )
-
-          # Final cleanup.
+          # Compile-safe replacements
           text = text.replace(
               "AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER",
               "AccessibilityNodeInfo.ACTION_CLICK"
@@ -355,7 +289,7 @@ jobs:
 
           path.write_text(text, encoding="utf-8")
 
-          print("Accessibility compatibility fix completed.")
+          print("Accessibility compatibility fixed.")
           PY
 
       # =========================================================
@@ -424,7 +358,7 @@ jobs:
           echo "Coroutine verification PASSED."
 
       # =========================================================
-      # FIX APP VERSION
+      # FIX APP VERSION 4.5.0
       # =========================================================
       - name: Fix app version
         working-directory: ${{ env.PROJECT }}
@@ -432,8 +366,8 @@ jobs:
         run: |
           set -e
 
+          # Android version
           if [ -f android/app/build.gradle ]; then
-
             python3 - <<'PY'
           from pathlib import Path
           import re
@@ -443,62 +377,82 @@ jobs:
 
           text = re.sub(
               r'versionCode\s+\d+',
-              'versionCode 21',
+              'versionCode 23',
               text,
               count=1
           )
 
           text = re.sub(
               r'versionName\s+"[^"]*"',
-              'versionName "4.1.0"',
+              'versionName "4.5.0"',
               text,
               count=1
           )
 
           path.write_text(text, encoding="utf-8")
           PY
-
           fi
 
+          # Expo/app version
           if [ -f app.json ]; then
             sed -i \
-              's/"version": "[^"]*"/"version": "4.1.0"/' \
+              's/"version": "[^"]*"/"version": "4.5.0"/' \
               app.json
           fi
 
-          echo "App version set to 4.1.0."
+          echo "App version set to 4.5.0."
 
       # =========================================================
-      # VERIFY IMPORTANT FEATURES
+      # VERIFY 4.5.0 FEATURES
       # =========================================================
-      - name: Verify Abir AI features
+      - name: Verify Abir AI 4.5.0 features
         working-directory: ${{ env.PROJECT }}
         shell: bash
         run: |
           set -e
 
+          echo "========================================"
+          echo "VERIFY CORE FEATURES"
+          echo "========================================"
+
           test -f assistant/offlineBrain.ts
           test -f assistant/intentParser.ts
           test -f assistant/onlineAssistant.ts
+          test -f assistant/androidActions.ts
+          test -f assistant/voiceInput.ts
+          test -f assistant/appNameMatcher.ts
+          test -f app/index.tsx
 
-          echo "Core assistant files found."
+          echo "Core assistant files: OK"
 
+          # Screen snapshot
           if grep -Rqs \
-            "universalSearch\|typeText\|tapText\|scroll" \
-            assistant modules; then
+            "getScreenSnapshot\|screenSnapshot" \
+            assistant modules app; then
+            echo "Smart screen snapshot: detected"
+          else
+            echo "WARNING: Smart screen snapshot not detected"
+          fi
+
+          # Universal screen control
+          if grep -Rqs \
+            "searchAndOpenInApp\|clickTextOnScreen\|typeIntoFocusedField\|scrollScreen" \
+            assistant modules app; then
             echo "Universal screen control: detected"
           else
             echo "WARNING: Universal screen control not detected"
           fi
 
+          # Device controls
           if grep -Rqs \
-            "volume\|flashlight\|screenshot\|quickSettings" \
+            "volume\|flashlight\|screenshot\|quickSettings\|lock-screen" \
             assistant modules; then
             echo "Device controls: detected"
           else
             echo "WARNING: Device controls not detected"
           fi
 
+          # Wake word
           if find modules \
             -name "WakeWordService.kt" \
             -print -quit | grep -q .; then
@@ -507,7 +461,37 @@ jobs:
             echo "WARNING: Wake word service not detected"
           fi
 
+          # App aliases
+          if grep -Rqs \
+            "হোয়াটসঅ্যাপ\|হোয়াটসঅ্যাপ\|whatapp\|you tube" \
+            assistant; then
+            echo "Expanded app aliases: detected"
+          else
+            echo "WARNING: Expanded app aliases not detected"
+          fi
+
+          echo ""
           echo "Feature verification completed."
+
+      # =========================================================
+      # VERIFY VERSION
+      # =========================================================
+      - name: Verify version
+        working-directory: ${{ env.PROJECT }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking version..."
+
+          if [ -f app.json ]; then
+            grep -F '"version": "4.5.0"' app.json
+          fi
+
+          grep -F 'versionCode 23' android/app/build.gradle
+          grep -F 'versionName "4.5.0"' android/app/build.gradle
+
+          echo "Version verification PASSED."
 
       # =========================================================
       # PREPARE GRADLE
@@ -590,11 +574,11 @@ jobs:
           mkdir -p release
 
           cp "$APK" \
-            release/Abir-AI-4.1.0-release.apk
+            release/Abir-AI-4.5.0-release.apk
 
           echo ""
           echo "APK created:"
-          ls -lh release/Abir-AI-4.1.0-release.apk
+          ls -lh release/Abir-AI-4.5.0-release.apk
 
       # =========================================================
       # UPLOAD APK
@@ -602,6 +586,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-4.1.0-release
-          path: ${{ env.PROJECT }}/release/Abir-AI-4.1.0-release.apk
+          name: Abir-AI-4.5.0-release
+          path: ${{ env.PROJECT }}/release/Abir-AI-4.5.0-release.apk
           if-no-files-found: error
