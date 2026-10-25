@@ -39,7 +39,7 @@ jobs:
 
 
       # ==========================================
-      # 4. pnpm
+      # 4. pnpm 10
       # ==========================================
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -60,6 +60,7 @@ jobs:
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
           echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
           if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
             SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -72,12 +73,14 @@ jobs:
 
           echo "Using sdkmanager: $SDKMANAGER"
 
-          # Do NOT chmod sdkmanager.
           "$SDKMANAGER" --version
 
+          echo "Accepting Android SDK licenses..."
           yes | "$SDKMANAGER" \
             --sdk_root="$ANDROID_HOME" \
             --licenses || true
+
+          echo "Installing Android packages..."
 
           "$SDKMANAGER" \
             --sdk_root="$ANDROID_HOME" \
@@ -89,37 +92,42 @@ jobs:
 
 
       # ==========================================
-      # 6. Find the correct ZIP
+      # 6. Find 4.6.1 ZIP
       # ==========================================
       - name: Find Abir AI source ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP="AbirAI-4.5.1-Fixed-v2.zip"
+          ZIP="AbirAI-4.6.1-Full-Control-Voice-Fixed.zip"
 
           echo "Looking for:"
           echo "$ZIP"
 
           if [ ! -f "$ZIP" ]; then
             echo ""
-            echo "ERROR: ZIP not found."
+            echo "ERROR: 4.6.1 ZIP not found."
             echo ""
-            echo "ZIP files currently in repository:"
-            find . -maxdepth 2 -type f -name "*.zip" -print
+            echo "ZIP files in repository:"
+
+            find . \
+              -maxdepth 3 \
+              -type f \
+              -name "*.zip" \
+              -print
 
             exit 1
           fi
 
           echo ""
-          echo "Found ZIP:"
+          echo "Found:"
           ls -lh "$ZIP"
 
           echo "ZIP_FILE=$ZIP" >> "$GITHUB_ENV"
 
 
       # ==========================================
-      # 7. Test ZIP
+      # 7. Verify ZIP
       # ==========================================
       - name: Verify ZIP
         shell: bash
@@ -148,7 +156,7 @@ jobs:
 
 
       # ==========================================
-      # 9. Detect project
+      # 9. Detect project directory
       # ==========================================
       - name: Detect project directory
         shell: bash
@@ -157,13 +165,11 @@ jobs:
 
           PROJECT_DIR=""
 
-          # Project directly inside ZIP
           if [ -f "extracted/package.json" ] &&
              [ -d "extracted/android" ]; then
 
             PROJECT_DIR="extracted"
 
-          # Project inside src/
           elif [ -f "extracted/src/package.json" ] &&
                [ -d "extracted/src/android" ]; then
 
@@ -171,11 +177,10 @@ jobs:
 
           else
 
-            # Automatic search
-            ANDROID_DIR=$(find extracted \
+            ANDROID_DIR="$(find extracted \
               -type d \
               -name android \
-              | head -n 1)
+              | head -n 1)"
 
             if [ -n "$ANDROID_DIR" ]; then
 
@@ -190,10 +195,12 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
+
             echo "ERROR: Abir AI project not found."
 
             echo ""
-            echo "Found package.json files:"
+            echo "package.json files found:"
+
             find extracted \
               -name package.json \
               -type f \
@@ -211,7 +218,7 @@ jobs:
 
           echo ""
           echo "================================"
-          echo "Project detected:"
+          echo "Project:"
           echo "$PROJECT_DIR"
           echo "================================"
 
@@ -235,7 +242,7 @@ jobs:
 
 
       # ==========================================
-      # 11. Verify workspace dependency is gone
+      # 11. Verify broken workspace dependency
       # ==========================================
       - name: Verify workspace dependencies
         working-directory: ${{ env.PROJECT_DIR }}
@@ -243,31 +250,24 @@ jobs:
         run: |
           set -e
 
-          echo "Checking for broken workspace dependencies..."
+          echo "Checking workspace dependencies..."
 
-          if grep -R \
-            '"@workspace/api-client-react"' \
-            package.json \
-            2>/dev/null; then
-
-            echo ""
-            echo "ERROR: @workspace/api-client-react still exists."
+          if grep -Fq '"@workspace/api-client-react"' package.json; then
+            echo "ERROR: @workspace/api-client-react still exists in package.json."
             exit 1
           fi
 
-          if grep -R \
-            '"@workspace/api-client-react"' \
-            . \
+          if grep -R -Fq '"@workspace/api-client-react"' . \
             --exclude-dir=node_modules \
             --exclude-dir=.git \
             2>/dev/null; then
 
-            echo ""
-            echo "WARNING: workspace reference found somewhere."
-          fi
+            echo "WARNING: workspace reference found outside package.json."
+          else
 
-          echo ""
-          echo "Workspace dependency check complete."
+            echo "No broken workspace dependency found."
+
+          fi
 
 
       # ==========================================
@@ -289,7 +289,9 @@ jobs:
           echo ""
           echo "Installing dependencies..."
 
-          pnpm install --no-frozen-lockfile
+          pnpm install \
+            --no-frozen-lockfile \
+            --allow-build=esbuild
 
           echo ""
           echo "Dependencies installed successfully."
@@ -310,7 +312,30 @@ jobs:
 
 
       # ==========================================
-      # 14. Kotlin compatibility
+      # 14. TypeScript check
+      # ==========================================
+      - name: TypeScript check
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          if pnpm exec tsc \
+            -p tsconfig.json \
+            --noEmit; then
+
+            echo "TypeScript check: OK"
+
+          else
+
+            echo "ERROR: TypeScript check failed."
+            exit 1
+
+          fi
+
+
+      # ==========================================
+      # 15. Android compatibility fixes
       # ==========================================
       - name: Apply Android compatibility fixes
         working-directory: ${{ env.PROJECT_DIR }}
@@ -318,7 +343,7 @@ jobs:
         run: |
           set -e
 
-          echo "Applying safe Kotlin fixes..."
+          echo "Applying safe Kotlin compatibility fixes..."
 
           find android \
             -name "*.kt" \
@@ -328,15 +353,15 @@ jobs:
 
             sed -i \
               's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
-              "$file" || true
+              "$file"
 
           done
 
-          echo "Kotlin fixes complete."
+          echo "Kotlin compatibility fixes complete."
 
 
       # ==========================================
-      # 15. Prepare Gradle
+      # 16. Prepare Gradle
       # ==========================================
       - name: Prepare Gradle
         working-directory: ${{ env.PROJECT_DIR }}/android
@@ -346,15 +371,13 @@ jobs:
 
           test -f gradlew
 
-          # Only our project's gradlew.
-          # Never chmod sdkmanager.
           chmod +x ./gradlew
 
           echo "Gradle wrapper ready."
 
 
       # ==========================================
-      # 16. Check Gradle
+      # 17. Check Gradle
       # ==========================================
       - name: Check Gradle
         working-directory: ${{ env.PROJECT_DIR }}/android
@@ -366,7 +389,7 @@ jobs:
 
 
       # ==========================================
-      # 17. Clean
+      # 18. Clean
       # ==========================================
       - name: Clean Android build
         working-directory: ${{ env.PROJECT_DIR }}/android
@@ -380,9 +403,9 @@ jobs:
 
 
       # ==========================================
-      # 18. Build Release APK
+      # 19. Build Release APK
       # ==========================================
-      - name: Build Abir AI Release APK
+      - name: Build Abir AI 4.6.1 Release APK
         working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
@@ -390,7 +413,7 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "       BUILDING ABIR AI 4.5.1"
+          echo "       BUILDING ABIR AI 4.6.1"
           echo "=========================================="
           echo ""
 
@@ -404,7 +427,7 @@ jobs:
 
 
       # ==========================================
-      # 19. Find APK
+      # 20. Find APK
       # ==========================================
       - name: Find generated APK
         shell: bash
@@ -414,6 +437,11 @@ jobs:
           APK_DIR="${PROJECT_DIR}/android/app/build/outputs/apk"
 
           echo "Searching for APK..."
+
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: APK output directory does not exist."
+            exit 1
+          fi
 
           find "$APK_DIR" \
             -type f \
@@ -438,7 +466,7 @@ jobs:
 
 
       # ==========================================
-      # 20. Prepare final APK
+      # 21. Prepare final APK
       # ==========================================
       - name: Prepare APK
         shell: bash
@@ -449,39 +477,39 @@ jobs:
           mkdir -p release
 
           cp "$APK_PATH" \
-            release/Abir-AI-4.5.1-release.apk
+            release/Abir-AI-4.6.1-release.apk
 
           echo ""
           echo "Final APK:"
-          ls -lh release/Abir-AI-4.5.1-release.apk
+          ls -lh release/Abir-AI-4.6.1-release.apk
 
 
       # ==========================================
-      # 21. Upload APK
+      # 22. Upload APK
       # ==========================================
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-4.5.1-release
-          path: release/Abir-AI-4.5.1-release.apk
+          name: Abir-AI-4.6.1-release
+          path: release/Abir-AI-4.6.1-release.apk
           if-no-files-found: error
 
 
       # ==========================================
-      # 22. Success
+      # 23. Success
       # ==========================================
       - name: Build success
         shell: bash
         run: |
           echo ""
           echo "=========================================="
-          echo "      ABIR AI 4.5.1 BUILD SUCCESS"
+          echo "      ABIR AI 4.6.1 BUILD SUCCESS"
           echo "=========================================="
           echo ""
           echo "APK:"
-          ls -lh release/Abir-AI-4.5.1-release.apk
+          ls -lh release/Abir-AI-4.6.1-release.apk
           echo ""
           echo "Artifact:"
-          echo "Abir-AI-4.5.1-release"
+          echo "Abir-AI-4.6.1-release"
           echo ""
           echo "=========================================="
