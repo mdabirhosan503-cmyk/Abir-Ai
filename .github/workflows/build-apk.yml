@@ -15,37 +15,35 @@ jobs:
 
     steps:
 
-      # ==========================================
-      # 1. Checkout
-      # ==========================================
+      # =========================================================
+      # 1. Checkout repository
+      # =========================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ==========================================
-      # 2. Java 17
-      # ==========================================
+      # =========================================================
+      # 2. Setup Java 17
+      # =========================================================
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
 
-      # ==========================================
-      # 3. Node.js 20
-      # ==========================================
+      # =========================================================
+      # 3. Setup Node.js 20
+      # =========================================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: pnpm
 
 
-      # ==========================================
-      # 4. pnpm
-      # ==========================================
+      # =========================================================
+      # 4. Setup pnpm
+      # =========================================================
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -53,15 +51,19 @@ jobs:
           run_install: false
 
 
-      # ==========================================
-      # 5. Check tools
-      # ==========================================
+      # =========================================================
+      # 5. Check build tools
+      # =========================================================
       - name: Check build tools
         shell: bash
         run: |
           set -e
 
-          echo "================================"
+          echo "=========================================="
+          echo "BUILD TOOLS"
+          echo "=========================================="
+
+          echo ""
           echo "Node:"
           node --version
 
@@ -73,12 +75,16 @@ jobs:
           echo "Java:"
           java -version
 
-          echo "================================"
+          echo ""
+          echo "JAVA_HOME:"
+          echo "$JAVA_HOME"
+
+          echo "=========================================="
 
 
-      # ==========================================
+      # =========================================================
       # 6. Setup Android SDK
-      # ==========================================
+      # =========================================================
       - name: Setup Android SDK
         shell: bash
         run: |
@@ -88,19 +94,31 @@ jobs:
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
           echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
           if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+
             SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
           elif command -v sdkmanager >/dev/null 2>&1; then
+
             SDKMANAGER="$(command -v sdkmanager)"
+
           else
+
+            echo ""
             echo "ERROR: sdkmanager not found."
+            echo ""
             exit 1
+
           fi
 
-          echo "Using sdkmanager:"
+          echo ""
+          echo "sdkmanager:"
           echo "$SDKMANAGER"
 
+          echo ""
+          echo "Android SDK Manager version:"
           "$SDKMANAGER" --version
 
           echo ""
@@ -111,7 +129,7 @@ jobs:
             --licenses || true
 
           echo ""
-          echo "Installing Android SDK..."
+          echo "Installing required Android SDK packages..."
 
           "$SDKMANAGER" \
             --sdk_root="$ANDROID_HOME" \
@@ -120,23 +138,37 @@ jobs:
             "build-tools;35.0.0"
 
           echo ""
-          echo "Android SDK ready."
+          echo "=========================================="
+          echo "ANDROID SDK READY"
+          echo "=========================================="
 
 
-      # ==========================================
-      # 7. Find Abir AI source ZIP
-      # ==========================================
+      # =========================================================
+      # 7. Find Abir AI ZIP
+      # =========================================================
       - name: Find Abir AI source ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Searching for Abir AI ZIP..."
+          echo "=========================================="
+          echo "SEARCHING FOR ABIR AI ZIP"
+          echo "=========================================="
 
-          ZIP_FILES=()
+          ZIP_FILE=""
 
+          # First look for AbirAI ZIP files.
           while IFS= read -r file; do
-            ZIP_FILES+=("$file")
+            if [ -z "$ZIP_FILE" ]; then
+              ZIP_FILE="$file"
+            else
+              CURRENT_TIME="$(stat -c %Y "$file")"
+              SELECTED_TIME="$(stat -c %Y "$ZIP_FILE")"
+
+              if [ "$CURRENT_TIME" -gt "$SELECTED_TIME" ]; then
+                ZIP_FILE="$file"
+              fi
+            fi
           done < <(
             find . \
               -type f \
@@ -145,47 +177,45 @@ jobs:
               -print
           )
 
-          if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
+          if [ -z "$ZIP_FILE" ]; then
+
             echo ""
-            echo "ERROR: No Abir AI ZIP found."
+            echo "ERROR: Abir AI ZIP was not found."
             echo ""
+
             echo "Available ZIP files:"
             find . \
               -type f \
               -name "*.zip" \
               -not -path "./.git/*" \
               -print || true
+
+            echo ""
+            echo "Repository files:"
+            find . \
+              -maxdepth 3 \
+              -type f \
+              -not -path "./.git/*" \
+              -print \
+              | head -200
+
             exit 1
           fi
 
           echo ""
-          echo "Found ZIP files:"
-          printf '%s\n' "${ZIP_FILES[@]}"
-
-          # Prefer the newest modified AbirAI ZIP
-          ZIP_FILE="$(
-            printf '%s\n' "${ZIP_FILES[@]}" |
-            xargs -r ls -1t |
-            head -n 1
-          )"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Could not select source ZIP."
-            exit 1
-          fi
-
-          echo ""
-          echo "Selected source ZIP:"
+          echo "Selected ZIP:"
           echo "$ZIP_FILE"
 
+          echo ""
+          echo "ZIP size:"
           ls -lh "$ZIP_FILE"
 
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
 
-      # ==========================================
-      # 8. Verify ZIP
-      # ==========================================
+      # =========================================================
+      # 8. Verify ZIP integrity
+      # =========================================================
       - name: Verify source ZIP
         shell: bash
         run: |
@@ -195,71 +225,96 @@ jobs:
 
           unzip -tq "$ZIP_FILE"
 
+          echo ""
           echo "ZIP integrity: OK"
 
 
-      # ==========================================
-      # 9. Extract
-      # ==========================================
-      - name: Extract source
+      # =========================================================
+      # 9. Extract source
+      # =========================================================
+      - name: Extract Abir AI source
         shell: bash
         run: |
           set -e
 
           rm -rf extracted
+
           mkdir -p extracted
+
+          echo "Extracting:"
+          echo "$ZIP_FILE"
 
           unzip -q "$ZIP_FILE" -d extracted
 
-          echo "Source extracted."
+          echo ""
+          echo "Source extraction complete."
 
           echo ""
-          echo "Extracted top-level:"
+          echo "Extracted files:"
           find extracted \
-            -maxdepth 2 \
+            -maxdepth 3 \
             -type f \
-            | head -100
+            | head -200
 
 
-      # ==========================================
+      # =========================================================
       # 10. Detect Android project
-      # ==========================================
-      - name: Detect project directory
+      # =========================================================
+      - name: Detect Abir AI project
         shell: bash
         run: |
           set -e
 
           PROJECT_DIR=""
 
-          # --------------------------------------
-          # Normal project layout
-          # --------------------------------------
+          echo "=========================================="
+          echo "DETECTING ANDROID PROJECT"
+          echo "=========================================="
+
+
+          # -------------------------------------------------------
+          # Layout 1:
+          # extracted/package.json
+          # extracted/android
+          # -------------------------------------------------------
           if [ -f "extracted/package.json" ] &&
-             [ -d "extracted/android" ]; then
+             [ -d "extracted/android" ] &&
+             [ -f "extracted/android/gradlew" ]; then
 
             PROJECT_DIR="extracted"
 
-          # --------------------------------------
-          # src layout
-          # --------------------------------------
-          elif [ -f "extracted/src/package.json" ] &&
-               [ -d "extracted/src/android" ]; then
+          fi
+
+
+          # -------------------------------------------------------
+          # Layout 2:
+          # extracted/src/package.json
+          # extracted/src/android
+          # -------------------------------------------------------
+          if [ -z "$PROJECT_DIR" ] &&
+             [ -f "extracted/src/package.json" ] &&
+             [ -d "extracted/src/android" ] &&
+             [ -f "extracted/src/android/gradlew" ]; then
 
             PROJECT_DIR="extracted/src"
 
-          else
+          fi
 
-            # ------------------------------------
-            # Search for Android project
-            # ------------------------------------
+
+          # -------------------------------------------------------
+          # Layout 3:
+          # Search automatically
+          # -------------------------------------------------------
+          if [ -z "$PROJECT_DIR" ]; then
+
             while IFS= read -r android_dir; do
 
-              candidate="$(dirname "$android_dir")"
+              CANDIDATE="$(dirname "$android_dir")"
 
-              if [ -f "$candidate/package.json" ] &&
-                 [ -f "$candidate/android/gradlew" ]; then
+              if [ -f "$CANDIDATE/package.json" ] &&
+                 [ -f "$CANDIDATE/android/gradlew" ]; then
 
-                PROJECT_DIR="$candidate"
+                PROJECT_DIR="$CANDIDATE"
                 break
 
               fi
@@ -274,25 +329,30 @@ jobs:
           fi
 
 
+          # -------------------------------------------------------
+          # Validate
+          # -------------------------------------------------------
           if [ -z "$PROJECT_DIR" ]; then
 
-            echo "ERROR: Abir AI Android project not found."
-
             echo ""
+            echo "ERROR: Abir AI Android project could not be detected."
+            echo ""
+
             echo "package.json files:"
             find extracted \
               -type f \
               -name package.json \
-              -print
+              -print || true
 
             echo ""
             echo "Android directories:"
             find extracted \
               -type d \
               -name android \
-              -print
+              -print || true
 
             exit 1
+
           fi
 
 
@@ -316,16 +376,17 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
+
           echo ""
           echo "=========================================="
-          echo "ABIR AI PROJECT"
+          echo "ABIR AI PROJECT FOUND"
           echo "=========================================="
           echo "$PROJECT_DIR"
 
 
-      # ==========================================
+      # =========================================================
       # 11. Read project version
-      # ==========================================
+      # =========================================================
       - name: Read Abir AI version
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
@@ -333,12 +394,10 @@ jobs:
           set -e
 
           VERSION="$(
-            node -p "
-              try {
-                require('./package.json').version || 'unknown'
-              } catch(e) {
-                'unknown'
-              }
+            node -e "
+              const fs = require('fs');
+              const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              process.stdout.write(String(pkg.version || 'unknown'));
             "
           )"
 
@@ -349,68 +408,96 @@ jobs:
           echo "ABIR_VERSION=$VERSION" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Abir AI version:"
+          echo "=========================================="
+          echo "ABIR AI VERSION"
+          echo "=========================================="
           echo "$VERSION"
 
 
-      # ==========================================
+      # =========================================================
       # 12. Verify project files
-      # ==========================================
+      # =========================================================
       - name: Verify project files
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
+          echo "Checking project..."
+
           test -f package.json
           test -d android
           test -f android/gradlew
+          test -f android/gradle/wrapper/gradle-wrapper.properties
 
+          echo ""
           echo "package.json: OK"
           echo "android: OK"
           echo "gradlew: OK"
+          echo "Gradle wrapper: OK"
 
 
-      # ==========================================
+      # =========================================================
       # 13. Check broken workspace dependency
-      # ==========================================
+      # =========================================================
       - name: Check workspace dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
+          echo "Checking package.json dependencies..."
+
           if grep -Fq '"@workspace/api-client-react"' package.json; then
+
             echo ""
             echo "ERROR:"
-            echo "@workspace/api-client-react exists in package.json."
+            echo "@workspace/api-client-react was found in package.json."
+            echo ""
             exit 1
+
           fi
 
+          echo ""
           echo "Workspace dependency check: OK"
 
 
-      # ==========================================
-      # 14. Install dependencies
-      # ==========================================
+      # =========================================================
+      # 14. Install pnpm dependencies
+      # =========================================================
       - name: Install dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "Installing dependencies..."
+          echo "=========================================="
+          echo "INSTALLING DEPENDENCIES"
+          echo "=========================================="
 
-          pnpm install \
-            --no-frozen-lockfile
+          if [ -f "pnpm-lock.yaml" ]; then
+
+            echo "pnpm-lock.yaml found."
+
+            pnpm install \
+              --no-frozen-lockfile
+
+          else
+
+            echo "No pnpm-lock.yaml found."
+
+            pnpm install \
+              --no-frozen-lockfile
+
+          fi
 
           echo ""
           echo "Dependencies installed successfully."
 
 
-      # ==========================================
+      # =========================================================
       # 15. Verify node_modules
-      # ==========================================
+      # =========================================================
       - name: Verify dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
@@ -422,16 +509,21 @@ jobs:
           echo "node_modules: OK"
 
 
-      # ==========================================
+      # =========================================================
       # 16. Inspect Android project
-      # ==========================================
+      # =========================================================
       - name: Inspect Android project
         working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -e
 
-          echo "Android project:"
+          echo "=========================================="
+          echo "ANDROID PROJECT"
+          echo "=========================================="
+
+          echo ""
+          echo "Current directory:"
           pwd
 
           echo ""
@@ -439,88 +531,133 @@ jobs:
           ls -lh gradlew
 
           echo ""
-          echo "Gradle configuration:"
+          echo "Gradle configuration files:"
+
           find . \
-            -maxdepth 3 \
+            -maxdepth 4 \
             -type f \
             \( \
               -name "build.gradle" \
               -o -name "build.gradle.kts" \
               -o -name "settings.gradle" \
               -o -name "settings.gradle.kts" \
+              -o -name "gradle-wrapper.properties" \
             \) \
             -print
 
 
-      # ==========================================
-      # 17. Android compatibility fixes
-      # ==========================================
+      # =========================================================
+      # 17. Apply Kotlin compatibility fixes
+      # =========================================================
       - name: Apply Android compatibility fixes
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "Applying Kotlin compatibility fixes..."
+          echo "Applying safe Kotlin compatibility fixes..."
 
-          find android \
-            -type f \
-            -name "*.kt" \
-            -print0 |
+          FOUND_KOTLIN=0
+
           while IFS= read -r -d '' file; do
+
+            FOUND_KOTLIN=1
 
             sed -i \
               's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
               "$file"
 
-          done
+          done < <(
+            find android \
+              -type f \
+              -name "*.kt" \
+              -print0
+          )
 
-          echo "Kotlin compatibility fixes complete."
+          if [ "$FOUND_KOTLIN" -eq 1 ]; then
+            echo "Kotlin source files inspected."
+          else
+            echo "No Kotlin source files found."
+          fi
+
+          echo "Compatibility fixes complete."
 
 
-      # ==========================================
+      # =========================================================
       # 18. Prepare Gradle
-      # ==========================================
+      # =========================================================
       - name: Prepare Gradle
         working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -e
 
+          test -f gradlew
+
           chmod +x gradlew
 
-          echo "Gradle wrapper ready."
+          echo "Gradle wrapper is executable."
 
 
-      # ==========================================
+      # =========================================================
       # 19. Check Gradle
-      # ==========================================
+      # =========================================================
       - name: Check Gradle
         working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -e
 
+          echo "=========================================="
+          echo "GRADLE VERSION"
+          echo "=========================================="
+
           ./gradlew --version
 
 
-      # ==========================================
-      # 20. Clean Android
-      # ==========================================
+      # =========================================================
+      # 20. Gradle dependency/cache warmup
+      # =========================================================
+      - name: Prepare Gradle dependencies
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        shell: bash
+        run: |
+          set -e
+
+          echo "Preparing Gradle..."
+
+          ./gradlew \
+            help \
+            --no-daemon \
+            --stacktrace
+
+          echo ""
+          echo "Gradle preparation complete."
+
+
+      # =========================================================
+      # 21. Clean Android project
+      # =========================================================
       - name: Clean Android
         working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -e
 
-          ./gradlew clean \
+          echo "Cleaning Android project..."
+
+          ./gradlew \
+            clean \
             --no-daemon \
             --stacktrace
 
+          echo ""
+          echo "Clean complete."
 
-      # ==========================================
-      # 21. Build Release APK
-      # ==========================================
+
+      # =========================================================
+      # 22. Build Release APK
+      # =========================================================
       - name: Build Abir AI Release APK
         working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
@@ -530,8 +667,12 @@ jobs:
           echo ""
           echo "=========================================="
           echo "       BUILDING ABIR AI"
-          echo "       VERSION: $ABIR_VERSION"
           echo "=========================================="
+
+          echo ""
+          echo "Version:"
+          echo "$ABIR_VERSION"
+
           echo ""
 
           ./gradlew \
@@ -540,30 +681,50 @@ jobs:
             --stacktrace
 
           echo ""
-          echo "BUILD FINISHED."
+          echo "=========================================="
+          echo "BUILD FINISHED"
+          echo "=========================================="
 
 
-      # ==========================================
-      # 22. Find APK
-      # ==========================================
-      - name: Find APK
+      # =========================================================
+      # 23. Find APK
+      # =========================================================
+      - name: Find generated APK
         shell: bash
         run: |
           set -e
 
           APK_DIR="${PROJECT_DIR}/android/app/build/outputs/apk"
 
-          echo "Searching for APK..."
+          echo "=========================================="
+          echo "SEARCHING FOR APK"
+          echo "=========================================="
 
           if [ ! -d "$APK_DIR" ]; then
-            echo "ERROR: APK output directory missing."
+
+            echo ""
+            echo "ERROR: APK output directory does not exist."
+            echo ""
+            echo "Available build outputs:"
+
+            find "${PROJECT_DIR}/android/app/build" \
+              -maxdepth 6 \
+              -type f \
+              -print 2>/dev/null || true
+
             exit 1
+
           fi
+
+
+          echo ""
+          echo "APK files:"
 
           find "$APK_DIR" \
             -type f \
             -name "*.apk" \
             -print
+
 
           APK="$(
             find "$APK_DIR" \
@@ -572,27 +733,35 @@ jobs:
               | head -n 1
           )"
 
+
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
+
+            echo ""
+            echo "ERROR: No APK was generated."
+
             exit 1
+
           fi
+
 
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
+
           echo ""
-          echo "APK found:"
+          echo "Generated APK:"
           ls -lh "$APK"
 
 
-      # ==========================================
-      # 23. Prepare final APK
-      # ==========================================
+      # =========================================================
+      # 24. Prepare final APK
+      # =========================================================
       - name: Prepare final APK
         shell: bash
         run: |
           set -e
 
           rm -rf release
+
           mkdir -p release
 
           FINAL_APK="release/Abir-AI-${ABIR_VERSION}-release.apk"
@@ -604,64 +773,4 @@ jobs:
           echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
 
           echo ""
-          echo "=========================================="
-          echo "FINAL APK"
-          echo "=========================================="
-
-          ls -lh "$FINAL_APK"
-
-
-      # ==========================================
-      # 24. Verify APK
-      # ==========================================
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -e
-
-          test -f "$FINAL_APK"
-
-          FILE_SIZE="$(stat -c%s "$FINAL_APK")"
-
-          if [ "$FILE_SIZE" -lt 100000 ]; then
-            echo "ERROR: APK appears too small."
-            exit 1
-          fi
-
-          echo "APK verification: OK"
-          echo "Size: $FILE_SIZE bytes"
-
-
-      # ==========================================
-      # 25. Upload APK
-      # ==========================================
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Abir-AI-${{ env.ABIR_VERSION }}-release
-          path: ${{ env.FINAL_APK }}
-          if-no-files-found: error
-          retention-days: 30
-
-
-      # ==========================================
-      # 26. Success
-      # ==========================================
-      - name: Build success
-        shell: bash
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "       ABIR AI BUILD SUCCESS"
-          echo "=========================================="
-          echo ""
-          echo "Version:"
-          echo "$ABIR_VERSION"
-          echo ""
-          echo "APK:"
-          ls -lh "$FINAL_APK"
-          echo ""
-          echo "Artifact:"
-          echo "Abir-AI-${ABIR_VERSION}-release"
-          echo ""
-          echo "=========================================="
+          echo "================================
