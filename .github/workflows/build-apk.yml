@@ -11,35 +11,31 @@ permissions:
 
 jobs:
   build:
-    name: Build Abir AI
+    name: Build Abir AI Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      # 1. Download repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Set up Node.js
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
-      # 3. Set up Java
-      - name: Set up Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      # 4. Set up Android SDK
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools'
+          packages: |
+            platform-tools
 
-      # 5. Locate and extract the project
       - name: Locate project files
         shell: bash
         run: |
@@ -51,14 +47,13 @@ jobs:
 
           WRAPPER=""
 
-          # Check common project locations first
           if [ -f "$WORK/android/gradlew" ]; then
             WRAPPER="$WORK/android/gradlew"
           elif [ -f "$WORK/gradlew" ]; then
             WRAPPER="$WORK/gradlew"
           else
-            # Extract a ZIP if no Gradle wrapper exists
-            ZIP_FILE="$(find "$WORK" -maxdepth 4 \
+            ZIP_FILE="$(find "$WORK" \
+              -maxdepth 5 \
               -type f -name '*.zip' \
               ! -path '*/.git/*' \
               -print -quit || true)"
@@ -75,7 +70,7 @@ jobs:
           fi
 
           if [ -z "$WRAPPER" ] || [ ! -f "$WRAPPER" ]; then
-            echo "::error::Could not find Gradle wrapper."
+            echo "::error::Gradle wrapper not found."
             exit 1
           fi
 
@@ -83,7 +78,6 @@ jobs:
           CURRENT="$ANDROID_DIR"
           PROJECT_ROOT=""
 
-          # Search upward for package.json
           while [ "$CURRENT" != "/" ]; do
             if [ -f "$CURRENT/package.json" ]; then
               PROJECT_ROOT="$CURRENT"
@@ -93,8 +87,8 @@ jobs:
           done
 
           if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::Could not find package.json above gradlew."
-            echo "Check that the ZIP contains the complete React Native/Expo project."
+            echo "::error::package.json not found above Android directory."
+            echo "Ensure the ZIP contains the complete project."
             exit 1
           fi
 
@@ -108,10 +102,8 @@ jobs:
 
           echo "Project root: $PROJECT_ROOT"
           echo "Android directory: $ANDROID_DIR"
-          echo "Project package.json:"
           ls -l "$PROJECT_ROOT/package.json"
 
-      # 6. Install JavaScript dependencies
       - name: Install dependencies
         shell: bash
         run: |
@@ -119,32 +111,47 @@ jobs:
           cd "$PROJECT_ROOT"
 
           if [ -f package-lock.json ]; then
-            npm ci
+            npm ci --legacy-peer-deps
           else
-            npm install
+            npm install --legacy-peer-deps
           fi
 
-      # 7. Check project configuration
-      - name: Verify project
+      - name: Verify project and Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_ROOT"
-          echo "Project root files:"
-          ls -la
+
+          test -f package.json
+          test -d node_modules
+
+          echo "Node version:"
+          node --version
+
+          echo "Java version:"
+          java -version
+
+          echo "Android SDK:"
+          echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-not set}}"
 
           cd "$ANDROID_DIR"
           chmod +x gradlew
 
-          echo "Android Gradle configuration:"
+          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [ -n "$SDK_PATH" ] && [ ! -f local.properties ]; then
+            printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
+          fi
+
+          echo "Gradle configuration files:"
           find . -maxdepth 3 -type f \
             \( -name 'settings.gradle' \
             -o -name 'settings.gradle.kts' \
             -o -name 'build.gradle' \
-            -o -name 'build.gradle.kts' \) -print
+            -o -name 'build.gradle.kts' \) \
+            -print
 
-      # 8. Build release APK
       - name: Build release APK
         shell: bash
         env:
@@ -156,30 +163,32 @@ jobs:
           ./gradlew \
             --no-daemon \
             --stacktrace \
+            --build-cache \
             assembleRelease
 
-      # 9. Collect APK
       - name: Collect APK
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$RUNNER_TEMP/abir-apk"
+          OUTPUT="$RUNNER_TEMP/abir-apk"
+          mkdir -p "$OUTPUT"
 
-          find "$ANDROID_DIR" -type f \
+          find "$ANDROID_DIR" \
+            -type f \
             -path '*/build/outputs/apk/release/*.apk' \
-            -exec cp {} "$RUNNER_TEMP/abir-apk/" \;
+            -exec cp {} "$OUTPUT/" \;
 
-          if ! find "$RUNNER_TEMP/abir-apk" \
+          if ! find "$OUTPUT" \
             -maxdepth 1 -type f -name '*.apk' | grep -q .; then
-            echo "::error::APK was not generated."
+            echo "::error::Release APK was not generated."
             exit 1
           fi
 
           echo "Generated APK:"
-          ls -lh "$RUNNER_TEMP/abir-apk"
+          ls -lh "$OUTPUT"
 
-      # 10. Upload APK
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
