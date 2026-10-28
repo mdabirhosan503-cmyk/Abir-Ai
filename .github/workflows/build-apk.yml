@@ -23,6 +23,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            **/package-lock.json
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -47,26 +50,49 @@ jobs:
 
           WRAPPER=""
 
+          # 1. Normal project structure
           if [ -f "$WORK/android/gradlew" ]; then
             WRAPPER="$WORK/android/gradlew"
+
           elif [ -f "$WORK/gradlew" ]; then
             WRAPPER="$WORK/gradlew"
+
           else
-            ZIP_FILE="$(find "$WORK" \
-              -maxdepth 5 \
-              -type f -name '*.zip' \
-              ! -path '*/.git/*' \
-              -print -quit || true)"
-
-            if [ -n "$ZIP_FILE" ]; then
-              echo "Extracting project ZIP: $ZIP_FILE"
-              unzip -oq "$ZIP_FILE" -d "$EXTRACT"
-
-              WRAPPER="$(find "$EXTRACT" \
-                -type f -name gradlew \
+            # 2. Find project ZIP
+            mapfile -t ZIP_FILES < <(
+              find "$WORK" \
+                -maxdepth 5 \
+                -type f \
+                -name '*.zip' \
+                ! -path '*/.git/*' \
                 ! -path '*/node_modules/*' \
-                -print -quit || true)"
+                -print
+            )
+
+            if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
+              echo "::error::No project ZIP and no Gradle wrapper found."
+              exit 1
             fi
+
+            if [ "${#ZIP_FILES[@]}" -gt 1 ]; then
+              echo "::warning::Multiple ZIP files found:"
+              printf ' - %s\n' "${ZIP_FILES[@]}"
+            fi
+
+            ZIP_FILE="${ZIP_FILES[0]}"
+
+            echo "Extracting project ZIP:"
+            echo "$ZIP_FILE"
+
+            unzip -oq "$ZIP_FILE" -d "$EXTRACT"
+
+            WRAPPER="$(
+              find "$EXTRACT" \
+                -type f \
+                -name gradlew \
+                ! -path '*/node_modules/*' \
+                -print -quit
+            )"
           fi
 
           if [ -z "$WRAPPER" ] || [ ! -f "$WRAPPER" ]; then
@@ -75,6 +101,7 @@ jobs:
           fi
 
           ANDROID_DIR="$(cd "$(dirname "$WRAPPER")" && pwd)"
+
           CURRENT="$ANDROID_DIR"
           PROJECT_ROOT=""
 
@@ -83,6 +110,7 @@ jobs:
               PROJECT_ROOT="$CURRENT"
               break
             fi
+
             CURRENT="$(dirname "$CURRENT")"
           done
 
@@ -100,14 +128,21 @@ jobs:
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
-          echo "Project root: $PROJECT_ROOT"
-          echo "Android directory: $ANDROID_DIR"
-          ls -l "$PROJECT_ROOT/package.json"
+          echo "================================"
+          echo "Project root:"
+          echo "$PROJECT_ROOT"
+          echo
+          echo "Android directory:"
+          echo "$ANDROID_DIR"
+          echo "================================"
+
+          ls -lh "$PROJECT_ROOT/package.json"
 
       - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$PROJECT_ROOT"
 
           if [ -f package-lock.json ]; then
@@ -129,13 +164,20 @@ jobs:
           echo "Node version:"
           node --version
 
+          echo
+          echo "NPM version:"
+          npm --version
+
+          echo
           echo "Java version:"
           java -version
 
+          echo
           echo "Android SDK:"
           echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-not set}}"
 
           cd "$ANDROID_DIR"
+
           chmod +x gradlew
 
           SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -144,12 +186,19 @@ jobs:
             printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
           fi
 
+          echo
+          echo "Gradle version:"
+          ./gradlew --version
+
+          echo
           echo "Gradle configuration files:"
           find . -maxdepth 3 -type f \
-            \( -name 'settings.gradle' \
-            -o -name 'settings.gradle.kts' \
-            -o -name 'build.gradle' \
-            -o -name 'build.gradle.kts' \) \
+            \( \
+              -name 'settings.gradle' \
+              -o -name 'settings.gradle.kts' \
+              -o -name 'build.gradle' \
+              -o -name 'build.gradle.kts' \
+            \) \
             -print
 
       - name: Build release APK
@@ -158,6 +207,7 @@ jobs:
           NODE_ENV: production
         run: |
           set -euo pipefail
+
           cd "$ANDROID_DIR"
 
           ./gradlew \
@@ -181,7 +231,11 @@ jobs:
             -exec cp {} "$OUTPUT/" \;
 
           if ! find "$OUTPUT" \
-            -maxdepth 1 -type f -name '*.apk' | grep -q .; then
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            | grep -q .; then
+
             echo "::error::Release APK was not generated."
             exit 1
           fi
