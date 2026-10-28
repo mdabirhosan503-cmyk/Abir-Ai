@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Abir AI Android APK
+    name: Build Abir AI
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -20,106 +20,129 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Locate and extract project ZIP if needed
-      - name: Locate Android project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -f "gradlew" ]; then
-            PROJECT_DIR="$GITHUB_WORKSPACE"
-          else
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 4 -type f -name '*.zip' \
-              ! -path '*/.git/*' -print -quit || true)"
-
-            if [ -z "$ZIP_FILE" ]; then
-              echo "::error::No gradlew or project ZIP found."
-              exit 1
-            fi
-
-            mkdir -p "$RUNNER_TEMP/abir-project"
-            unzip -oq "$ZIP_FILE" -d "$RUNNER_TEMP/abir-project"
-
-            WRAPPER="$(find "$RUNNER_TEMP/abir-project" \
-              -type f -name gradlew -print -quit || true)"
-
-            if [ -z "$WRAPPER" ]; then
-              echo "::error::The ZIP does not contain gradlew."
-              exit 1
-            fi
-
-            PROJECT_DIR="$(dirname "$WRAPPER")"
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
-
-      # 3. Install Node.js
+      # 2. Set up Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      # 4. Install Java
-      - name: Set up Java 17
+      # 3. Set up Java
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 5. Set up Android SDK without deprecated tools package
+      # 4. Set up Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools'
 
-      # 6. Check project files
-      - name: Verify Android project
+      # 5. Locate and extract the project
+      - name: Locate project files
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
 
-          test -f gradlew || {
-            echo "::error::gradlew is missing."
-            exit 1
-          }
+          WORK="$GITHUB_WORKSPACE"
+          EXTRACT="$RUNNER_TEMP/abir-project"
+          mkdir -p "$EXTRACT"
 
-          test -f gradle/wrapper/gradle-wrapper.properties || {
-            echo "::error::Gradle wrapper properties are missing."
-            exit 1
-          }
+          WRAPPER=""
 
-          chmod +x gradlew
+          # Check common project locations first
+          if [ -f "$WORK/android/gradlew" ]; then
+            WRAPPER="$WORK/android/gradlew"
+          elif [ -f "$WORK/gradlew" ]; then
+            WRAPPER="$WORK/gradlew"
+          else
+            # Extract a ZIP if no Gradle wrapper exists
+            ZIP_FILE="$(find "$WORK" -maxdepth 4 \
+              -type f -name '*.zip' \
+              ! -path '*/.git/*' \
+              -print -quit || true)"
 
-          if [ ! -f package.json ]; then
-            echo "::error::package.json is missing."
+            if [ -n "$ZIP_FILE" ]; then
+              echo "Extracting project ZIP: $ZIP_FILE"
+              unzip -oq "$ZIP_FILE" -d "$EXTRACT"
+
+              WRAPPER="$(find "$EXTRACT" \
+                -type f -name gradlew \
+                ! -path '*/node_modules/*' \
+                -print -quit || true)"
+            fi
+          fi
+
+          if [ -z "$WRAPPER" ] || [ ! -f "$WRAPPER" ]; then
+            echo "::error::Could not find Gradle wrapper."
             exit 1
           fi
 
-          echo "Gradle wrapper:"
-          cat gradle/wrapper/gradle-wrapper.properties
+          ANDROID_DIR="$(cd "$(dirname "$WRAPPER")" && pwd)"
+          CURRENT="$ANDROID_DIR"
+          PROJECT_ROOT=""
 
-          echo "Project build files:"
-          find . -maxdepth 4 -type f \
-            \( -name 'settings.gradle' \
-            -o -name 'settings.gradle.kts' \
-            -o -name 'build.gradle' \
-            -o -name 'build.gradle.kts' \) -print
+          # Search upward for package.json
+          while [ "$CURRENT" != "/" ]; do
+            if [ -f "$CURRENT/package.json" ]; then
+              PROJECT_ROOT="$CURRENT"
+              break
+            fi
+            CURRENT="$(dirname "$CURRENT")"
+          done
 
-      # 7. Install JavaScript dependencies
-      - name: Install JavaScript dependencies
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "::error::Could not find package.json above gradlew."
+            echo "Check that the ZIP contains the complete React Native/Expo project."
+            exit 1
+          fi
+
+          if [ ! -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo "::error::Gradle wrapper properties are missing."
+            exit 1
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+
+          echo "Project root: $PROJECT_ROOT"
+          echo "Android directory: $ANDROID_DIR"
+          echo "Project package.json:"
+          ls -l "$PROJECT_ROOT/package.json"
+
+      # 6. Install JavaScript dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
+          cd "$PROJECT_ROOT"
 
           if [ -f package-lock.json ]; then
             npm ci
           else
             npm install
           fi
+
+      # 7. Check project configuration
+      - name: Verify project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+          echo "Project root files:"
+          ls -la
+
+          cd "$ANDROID_DIR"
+          chmod +x gradlew
+
+          echo "Android Gradle configuration:"
+          find . -maxdepth 3 -type f \
+            \( -name 'settings.gradle' \
+            -o -name 'settings.gradle.kts' \
+            -o -name 'build.gradle' \
+            -o -name 'build.gradle.kts' \) -print
 
       # 8. Build release APK
       - name: Build release APK
@@ -128,34 +151,35 @@ jobs:
           NODE_ENV: production
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
+          cd "$ANDROID_DIR"
 
           ./gradlew \
             --no-daemon \
             --stacktrace \
             assembleRelease
 
-      # 9. Find generated APK
+      # 9. Collect APK
       - name: Collect APK
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p "$RUNNER_TEMP/abir-apk"
 
-          find "$PROJECT_DIR" -type f \
+          find "$ANDROID_DIR" -type f \
             -path '*/build/outputs/apk/release/*.apk' \
             -exec cp {} "$RUNNER_TEMP/abir-apk/" \;
 
           if ! find "$RUNNER_TEMP/abir-apk" \
             -maxdepth 1 -type f -name '*.apk' | grep -q .; then
-            echo "::error::No release APK was generated."
+            echo "::error::APK was not generated."
             exit 1
           fi
 
-          echo "APK files ready for upload:"
+          echo "Generated APK:"
           ls -lh "$RUNNER_TEMP/abir-apk"
 
-      # 10. Upload APK to GitHub Actions
+      # 10. Upload APK
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
