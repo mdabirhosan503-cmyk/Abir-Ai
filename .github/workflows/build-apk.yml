@@ -11,32 +11,33 @@ permissions:
 
 jobs:
   build:
-    name: Build Abir AI 5.4.9 Release APK
+    name: Build Abir AI Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
 
-      # =========================================================
+      # ==========================================
       # 1. Checkout
-      # =========================================================
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # =========================================================
-      # 2. Node.js 22
-      # =========================================================
+      # ==========================================
+      # 2. Node.js
+      # IMPORTANT:
+      # No npm cache because project has no lock file
+      # ==========================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
 
 
-      # =========================================================
+      # ==========================================
       # 3. Java 17
-      # =========================================================
+      # ==========================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -45,16 +46,16 @@ jobs:
           cache: gradle
 
 
-      # =========================================================
+      # ==========================================
       # 4. Android SDK
-      # =========================================================
+      # ==========================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
 
-      # =========================================================
+      # ==========================================
       # 5. Install Android SDK packages
-      # =========================================================
+      # ==========================================
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -109,9 +110,9 @@ jobs:
           echo "Android SDK installation completed."
 
 
-      # =========================================================
-      # 6. Locate Abir AI project
-      # =========================================================
+      # ==========================================
+      # 6. Find Abir AI project
+      # ==========================================
       - name: Locate Abir AI project
         shell: bash
         run: |
@@ -128,18 +129,15 @@ jobs:
           echo "Searching for Abir AI Android project"
           echo "=============================================="
 
-
-          # -----------------------------------------------------
+          # ----------------------------------------
           # Direct Android project
-          # -----------------------------------------------------
-
+          # ----------------------------------------
           if [ -f "$WORK/android/gradlew" ]; then
 
             echo "Found Android project:"
             echo "$WORK/android"
 
             WRAPPER="$WORK/android/gradlew"
-
 
           elif [ -f "$WORK/gradlew" ]; then
 
@@ -148,50 +146,23 @@ jobs:
 
             WRAPPER="$WORK/gradlew"
 
-
           else
 
-            # ---------------------------------------------------
-            # Prefer exact 5.4.9 project ZIP
-            # ---------------------------------------------------
+            # --------------------------------------
+            # Find project ZIP
+            # --------------------------------------
 
             ZIP_FILE="$(
               find "$WORK" \
                 -type f \
-                -name "AbirAI-5.4.9*.zip" \
+                -name "AbirAI-*.zip" \
                 ! -path "*/.git/*" \
                 -print \
                 | sort \
                 | tail -n 1
-            )
-
-
-            # ---------------------------------------------------
-            # If exact 5.4.9 ZIP is unavailable,
-            # find newest AbirAI ZIP
-            # ---------------------------------------------------
+            )"
 
             if [ -z "${ZIP_FILE:-}" ]; then
-
-              ZIP_FILE="$(
-                find "$WORK" \
-                  -type f \
-                  -name "AbirAI-*.zip" \
-                  ! -path "*/.git/*" \
-                  -print \
-                  | sort \
-                  | tail -n 1
-              )
-
-            fi
-
-
-            # ---------------------------------------------------
-            # Final fallback: any ZIP
-            # ---------------------------------------------------
-
-            if [ -z "${ZIP_FILE:-}" ]; then
-
               ZIP_FILE="$(
                 find "$WORK" \
                   -type f \
@@ -200,10 +171,8 @@ jobs:
                   -print \
                   | sort \
                   | tail -n 1
-              )
-
+              )"
             fi
-
 
             if [ -z "${ZIP_FILE:-}" ]; then
 
@@ -212,26 +181,22 @@ jobs:
               echo ""
               echo "Repository files:"
               find "$WORK" \
-                -maxdepth 5 \
+                -maxdepth 6 \
                 -type f \
                 -print \
-                | head -200 || true
+                | head -300 || true
 
               exit 1
-
             fi
-
 
             echo ""
             echo "Selected project ZIP:"
             echo "$ZIP_FILE"
 
-
             echo ""
             echo "Extracting project..."
 
             unzip -oq "$ZIP_FILE" -d "$EXTRACT"
-
 
             echo ""
             echo "Searching for Gradle wrapper..."
@@ -248,9 +213,9 @@ jobs:
           fi
 
 
-          # =====================================================
-          # Validate Gradle wrapper
-          # =====================================================
+          # ----------------------------------------
+          # Validate wrapper
+          # ----------------------------------------
 
           if [ -z "${WRAPPER:-}" ] || [ ! -f "$WRAPPER" ]; then
 
@@ -260,19 +225,19 @@ jobs:
             echo "Possible project files:"
 
             find "$WORK" \
-              -maxdepth 7 \
+              -maxdepth 8 \
               -type f \
               -print \
-              | head -300 || true
+              | head -500 || true
 
             exit 1
 
           fi
 
 
-          # =====================================================
+          # ----------------------------------------
           # Android directory
-          # =====================================================
+          # ----------------------------------------
 
           ANDROID_DIR="$(cd "$(dirname "$WRAPPER")" && pwd)"
 
@@ -281,9 +246,9 @@ jobs:
           echo "$ANDROID_DIR"
 
 
-          # =====================================================
-          # Find project root
-          # =====================================================
+          # ----------------------------------------
+          # Find package.json
+          # ----------------------------------------
 
           CURRENT="$ANDROID_DIR"
           PROJECT_ROOT=""
@@ -291,10 +256,8 @@ jobs:
           while [ "$CURRENT" != "/" ]; do
 
             if [ -f "$CURRENT/package.json" ]; then
-
               PROJECT_ROOT="$CURRENT"
               break
-
             fi
 
             CURRENT="$(dirname "$CURRENT")"
@@ -316,10 +279,6 @@ jobs:
           echo "$PROJECT_ROOT"
 
 
-          # =====================================================
-          # Validate Gradle wrapper properties
-          # =====================================================
-
           if [ ! -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
 
             echo "::error::Gradle wrapper properties missing."
@@ -329,10 +288,6 @@ jobs:
           fi
 
 
-          # =====================================================
-          # Export environment variables
-          # =====================================================
-
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
@@ -340,9 +295,9 @@ jobs:
           echo "Project detection completed successfully."
 
 
-      # =========================================================
+      # ==========================================
       # 7. Show project information
-      # =========================================================
+      # ==========================================
       - name: Show project information
         shell: bash
         run: |
@@ -363,7 +318,7 @@ jobs:
           echo "Project files:"
 
           find "$PROJECT_ROOT" \
-            -maxdepth 3 \
+            -maxdepth 4 \
             -type f \
             \( \
               -name "package.json" \
@@ -374,12 +329,12 @@ jobs:
             \) \
             -print \
             | sort \
-            | head -100 || true
+            | head -150 || true
 
 
-      # =========================================================
+      # ==========================================
       # 8. Install npm dependencies
-      # =========================================================
+      # ==========================================
       - name: Install npm dependencies
         shell: bash
         run: |
@@ -387,29 +342,40 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          echo "Installing npm dependencies..."
+          echo "=============================================="
+          echo "INSTALLING NPM DEPENDENCIES"
+          echo "=============================================="
 
           if [ -f package-lock.json ]; then
+
+            echo "package-lock.json found."
+            echo "Running npm ci..."
 
             npm ci --legacy-peer-deps
 
           elif [ -f npm-shrinkwrap.json ]; then
 
+            echo "npm-shrinkwrap.json found."
+            echo "Running npm ci..."
+
             npm ci --legacy-peer-deps
 
           else
+
+            echo "No npm lock file found."
+            echo "Running npm install..."
 
             npm install --legacy-peer-deps
 
           fi
 
           echo ""
-          echo "npm dependencies installed."
+          echo "npm dependencies installed successfully."
 
 
-      # =========================================================
+      # ==========================================
       # 9. Verify environment
-      # =========================================================
+      # ==========================================
       - name: Verify build environment
         shell: bash
         run: |
@@ -422,7 +388,6 @@ jobs:
           node --version
           npm --version
 
-
           echo ""
           echo "=============================================="
           echo "JAVA"
@@ -430,14 +395,12 @@ jobs:
 
           java -version
 
-
           echo ""
           echo "=============================================="
           echo "ANDROID SDK"
           echo "=============================================="
 
           echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-unknown}}"
-
 
           echo ""
           echo "=============================================="
@@ -452,7 +415,6 @@ jobs:
           echo "package.json OK"
           echo "node_modules OK"
 
-
           echo ""
           echo "=============================================="
           echo "GRADLE"
@@ -462,23 +424,19 @@ jobs:
 
           chmod +x gradlew
 
-
           SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
           if [ -n "$SDK_PATH" ]; then
-
             printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
-
           fi
-
 
           ./gradlew --version
 
 
-      # =========================================================
-      # 10. Verify launcher Kotlin source
-      # =========================================================
-      - name: Verify Abir launcher Kotlin source
+      # ==========================================
+      # 10. Fix launcher Kotlin compatibility
+      # ==========================================
+      - name: Check Abir launcher Kotlin source
         shell: bash
         run: |
           set -euo pipefail
@@ -491,27 +449,90 @@ jobs:
             echo "$LAUNCHER_FILE"
 
             echo ""
-            echo "Checking for old problematic ln/log calls..."
+            echo "Checking source..."
 
             grep -nE '\bln\s*\(|\blog\s*\(' "$LAUNCHER_FILE" || true
 
             echo ""
-            echo "Checking Kotlin syntax references..."
+            echo "Checking Math.log usage..."
 
             grep -nE 'Math\.log|kotlin\.math' "$LAUNCHER_FILE" || true
 
           else
 
-            echo "Launcher Kotlin file not found at expected path."
-            echo "Continuing because project structure may differ."
+            echo "Launcher Kotlin file not found."
+            echo "Continuing..."
 
           fi
 
 
-      # =========================================================
-      # 11. Build Release APK
-      # =========================================================
-      - name: Build Abir AI 5.4.9 Release APK
+      # ==========================================
+      # 11. Fix old Contacts references if needed
+      # ==========================================
+      - name: Fix launcher Contacts references
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LAUNCHER_FILE="$ANDROID_DIR/modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
+
+          if [ ! -f "$LAUNCHER_FILE" ]; then
+            echo "Contacts fix skipped."
+            exit 0
+          fi
+
+          echo "Checking Contacts references..."
+
+          if grep -q "val phone = ContactsContract.CommonDataKinds.Phone" "$LAUNCHER_FILE"; then
+
+            echo "Old Contacts alias found."
+            echo "Applying compatibility fix..."
+
+            sed -i \
+              '/val phone = ContactsContract.CommonDataKinds.Phone/d' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.CONTACT_ID/ContactsContract.CommonDataKinds.Phone.CONTACT_ID/g' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.DISPLAY_NAME/ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME/g' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.NUMBER/ContactsContract.CommonDataKinds.Phone.NUMBER/g' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.TYPE/ContactsContract.CommonDataKinds.Phone.TYPE/g' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.LABEL/ContactsContract.CommonDataKinds.Phone.LABEL/g' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.CONTENT_URI/ContactsContract.CommonDataKinds.Phone.CONTENT_URI/g' \
+              "$LAUNCHER_FILE"
+
+            sed -i \
+              's/phone\.getTypeLabel/ContactsContract.CommonDataKinds.Phone.getTypeLabel/g' \
+              "$LAUNCHER_FILE"
+
+            echo "Contacts compatibility fix completed."
+
+          else
+
+            echo "No old Contacts alias found."
+
+          fi
+
+
+      # ==========================================
+      # 12. Build Release APK
+      # ==========================================
+      - name: Build Abir AI Release APK
         shell: bash
         env:
           NODE_ENV: production
@@ -523,7 +544,7 @@ jobs:
           chmod +x gradlew
 
           echo "=============================================="
-          echo "BUILDING ABIR AI 5.4.9"
+          echo "BUILDING ABIR AI RELEASE APK"
           echo "=============================================="
 
           ./gradlew \
@@ -538,9 +559,9 @@ jobs:
           echo "=============================================="
 
 
-      # =========================================================
-      # 12. Find generated APK
-      # =========================================================
+      # ==========================================
+      # 13. Collect APK
+      # ==========================================
       - name: Collect release APK
         if: success()
         shell: bash
@@ -587,35 +608,35 @@ jobs:
           printf '%s\n' "${APK_FILES[@]}"
 
 
-          # -----------------------------------------------------
-          # Select first release APK
-          # -----------------------------------------------------
-
           APK="${APK_FILES[0]}"
+
 
           echo ""
           echo "Selected APK:"
           echo "$APK"
 
 
-          cp "$APK" "$OUTPUT/Abir-AI-5.4.9-release.apk"
+          cp "$APK" \
+            "$OUTPUT/Abir-AI-release.apk"
 
 
           echo ""
           echo "Final APK:"
-          ls -lh "$OUTPUT/Abir-AI-5.4.9-release.apk"
+
+          ls -lh "$OUTPUT/Abir-AI-release.apk"
 
 
-      # =========================================================
-      # 13. Verify APK
-      # =========================================================
+      # ==========================================
+      # 14. Verify APK
+      # ==========================================
       - name: Verify final APK
         if: success()
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$RUNNER_TEMP/abir-apk/Abir-AI-5.4.9-release.apk"
+          APK="$RUNNER_TEMP/abir-apk/Abir-AI-release.apk"
+
 
           if [ ! -f "$APK" ]; then
 
@@ -657,34 +678,37 @@ jobs:
           echo "APK verification passed."
 
 
-      # =========================================================
-      # 14. Upload APK artifact
-      # =========================================================
-      - name: Upload Abir AI 5.4.9 APK
+      # ==========================================
+      # 15. Upload APK
+      # ==========================================
+      - name: Upload Abir AI APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.9-release-APK
-          path: ${{ runner.temp }}/abir-apk/Abir-AI-5.4.9-release.apk
+          name: Abir-AI-release-APK
+          path: ${{ runner.temp }}/abir-apk/Abir-AI-release.apk
           if-no-files-found: error
           retention-days: 7
 
 
-      # =========================================================
-      # 15. Build summary
-      # =========================================================
+      # ==========================================
+      # 16. Build summary
+      # ==========================================
       - name: Build summary
         if: success()
         shell: bash
         run: |
           echo "=============================================="
-          echo "ABIR AI 5.4.9 BUILD SUCCESSFUL"
+          echo "ABIR AI BUILD SUCCESSFUL"
           echo "=============================================="
+
           echo ""
           echo "APK:"
-          echo "Abir-AI-5.4.9-release.apk"
+          echo "Abir-AI-release.apk"
+
           echo ""
           echo "Artifact:"
-          echo "Abir-AI-5.4.9-release-APK"
+          echo "Abir-AI-release-APK"
+
           echo ""
           echo "Build completed successfully."
