@@ -1,315 +1,132 @@
+
 name: Build Abir AI APK
 
 on:
   workflow_dispatch:
   push:
+    paths:
+      - "AbirAI-*.zip"
+      - ".github/workflows/build-apk.yml"
     branches:
       - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: abir-ai-apk-build
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build Abir AI 5.4.10 Release APK
+    name: Build Android Release APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Find and extract Abir AI project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="AbirAI-5.4.14-BANGLA-OFFLINE-SPEECH-FIX.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            ZIP_FILE="$(find . -maxdepth 2 -type f \
+              -name 'AbirAI-*.zip' | head -n 1)"
+          fi
+
+          if [ -z "${ZIP_FILE:-}" ] || [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Abir AI ZIP file not found in repository."
+            exit 1
+          fi
+
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          if [ ! -f extracted/package.json ] || \
+             [ ! -f extracted/android/gradlew ]; then
+            echo "::error::ZIP must contain package.json and android/gradlew at its root."
+            find extracted -maxdepth 3 -type f \
+              \( -name package.json -o -name gradlew \)
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/extracted" \
+            >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: ""
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v5
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.12.4"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -z "$SDK_ROOT" ]; then
-            echo "::error::Android SDK path not found."
-            exit 1
-          fi
-
-          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          else
-            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
-              -type f \
-              -name sdkmanager \
-              -print \
-              -quit 2>/dev/null || true)"
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
+          sdkmanager --install \
             "platform-tools" \
-            "platforms;android-35" \
             "platforms;android-36" \
-            "build-tools;35.0.0" \
             "build-tools;36.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
 
-      - name: Locate Android project
+      - name: Install JavaScript dependencies
+        working-directory: extracted
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Check TypeScript
+        working-directory: extracted
+        run: pnpm exec tsc -p tsconfig.json --noEmit
+
+      - name: Build release APK
+        working-directory: extracted/android
         shell: bash
         run: |
           set -euo pipefail
-
-          WORK="$GITHUB_WORKSPACE"
-          EXTRACT="$RUNNER_TEMP/abir-project"
-
-          mkdir -p "$EXTRACT"
-
-          WRAPPER=""
-
-          if [ -f "$WORK/android/gradlew" ]; then
-            WRAPPER="$WORK/android/gradlew"
-
-          elif [ -f "$WORK/gradlew" ]; then
-            WRAPPER="$WORK/gradlew"
-
-          else
-            ZIP_FILE="$(find "$WORK" \
-              -type f \
-              -name 'AbirAI-*.zip' \
-              ! -path '*/.git/*' \
-              -print | sort | tail -n 1)"
-
-            if [ -z "$ZIP_FILE" ]; then
-              ZIP_FILE="$(find "$WORK" \
-                -type f \
-                -name '*.zip' \
-                ! -path '*/.git/*' \
-                -print | sort | tail -n 1)"
-            fi
-
-            if [ -z "$ZIP_FILE" ]; then
-              echo "::error::No Android project or Abir AI ZIP found."
-              find "$WORK" \
-                -maxdepth 7 \
-                -type f \
-                -print | head -300 || true
-              exit 1
-            fi
-
-            echo "Using project ZIP: $ZIP_FILE"
-
-            unzip -oq "$ZIP_FILE" -d "$EXTRACT"
-
-            WRAPPER="$(find "$EXTRACT" \
-              -type f \
-              -name gradlew \
-              ! -path '*/node_modules/*' \
-              -print | head -n 1)"
-          fi
-
-          if [ -z "$WRAPPER" ] || [ ! -f "$WRAPPER" ]; then
-            echo "::error::gradlew was not found."
-
-            find "$WORK" "$EXTRACT" \
-              -type f \
-              \( -name gradlew -o -name gradle-wrapper.properties \) \
-              -print | head -200 || true
-
-            exit 1
-          fi
-
-          ANDROID_DIR="$(cd "$(dirname "$WRAPPER")" && pwd)"
-
-          PROJECT_ROOT=""
-          CURRENT="$ANDROID_DIR"
-
-          while [ "$CURRENT" != "/" ]; do
-            if [ -f "$CURRENT/package.json" ]; then
-              PROJECT_ROOT="$CURRENT"
-              break
-            fi
-
-            CURRENT="$(dirname "$CURRENT")"
-          done
-
-          if [ -z "$PROJECT_ROOT" ]; then
-            PACKAGE_FILE="$(find "$EXTRACT" \
-              -type f \
-              -name package.json \
-              ! -path '*/node_modules/*' \
-              -print | head -n 1)"
-
-            if [ -n "$PACKAGE_FILE" ]; then
-              PROJECT_ROOT="$(dirname "$PACKAGE_FILE")"
-            fi
-          fi
-
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::package.json was not found."
-            exit 1
-          fi
-
-          if [ ! -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "::error::gradle-wrapper.properties was not found."
-            exit 1
-          fi
-
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-
-          echo "PROJECT_ROOT=$PROJECT_ROOT"
-          echo "ANDROID_DIR=$ANDROID_DIR"
-
-      - name: Install npm dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_ROOT"
-
-          if [ -f package-lock.json ]; then
-            npm ci --legacy-peer-deps
-
-          elif [ -f npm-shrinkwrap.json ]; then
-            npm ci --legacy-peer-deps
-
-          else
-            npm install --legacy-peer-deps
-          fi
-
-      - name: Prepare Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$ANDROID_DIR"
-
           chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace \
+            :app:assembleRelease
 
-          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -n "$SDK_PATH" ]; then
-            printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
-          fi
-
-          ./gradlew --version
-
-      - name: Verify launcher Kotlin source
+      - name: Prepare APK artifact
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p release
 
-          FILE="$PROJECT_ROOT/modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/AbirAppLauncherModule.kt"
+          find extracted/android/app/build/outputs/apk/release \
+            -maxdepth 1 -type f -name '*.apk' \
+            -exec cp {} release/ \;
 
-          if [ -f "$FILE" ]; then
-
-            if grep -nE '(^|[^A-Za-z])ln\(' "$FILE"; then
-              echo "::error::Bare ln(...) call detected."
-              exit 1
-            fi
-
-            echo "Launcher Kotlin source check passed."
-
-          else
-            echo "Launcher Kotlin source not found; continuing."
-          fi
-
-      - name: Build Abir AI Release APK
-        shell: bash
-        env:
-          NODE_ENV: production
-        run: |
-          set -euo pipefail
-
-          cd "$ANDROID_DIR"
-
-          chmod +x gradlew
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            --build-cache \
-            assembleRelease
-
-      - name: Collect release APK
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          OUTPUT="$RUNNER_TEMP/abir-apk"
-
-          mkdir -p "$OUTPUT"
-
-          APK="$(find "$ANDROID_DIR" \
-            -type f \
-            -path '*/build/outputs/apk/release/*.apk' \
-            ! -name '*-unsigned.apk' \
-            -print | sort | head -n 1)"
-
-          if [ -z "$APK" ]; then
-            echo "::error::Release APK was not generated."
-
-            find "$ANDROID_DIR" \
-              -type f \
-              -name '*.apk' \
-              -print | sort || true
-
+          if ! ls release/*.apk >/dev/null 2>&1; then
+            echo "::error::No release APK was generated."
             exit 1
           fi
 
-          cp "$APK" "$OUTPUT/Abir-AI-5.4.10-release.apk"
+          ls -lh release/
 
-          ls -lh "$OUTPUT/Abir-AI-5.4.10-release.apk"
-
-      - name: Verify APK
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$RUNNER_TEMP/abir-apk/Abir-AI-5.4.10-release.apk"
-
-          test -f "$APK"
-
-          SIZE="$(stat -c%s "$APK")"
-
-          if [ "$SIZE" -le 100000 ]; then
-            echo "::error::APK is suspiciously small: $SIZE bytes"
-            exit 1
-          fi
-
-          echo "APK verification passed: $SIZE bytes"
-
-      - name: Upload Abir AI APK
-        if: success()
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.10-release-APK
-          path: ${{ runner.temp }}/abir-apk/Abir-AI-5.4.10-release.apk
+          name: Abir-AI-5.4.14-Release-APK
+          path: release/*.apk
           if-no-files-found: error
-          retention-days: 7
-
-      - name: Build summary
-        if: success()
-        shell: bash
-        run: |
-          echo "=============================================="
-          echo "ABIR AI 5.4.10 BUILD SUCCESSFUL"
-          echo "=============================================="
-          echo "APK: Abir-AI-5.4.10-release.apk"
+          retention-days: 14
+          
