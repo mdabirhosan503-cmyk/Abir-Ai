@@ -16,34 +16,46 @@ jobs:
     timeout-minutes: 60
 
     steps:
+
+      # ============================================================
       # 1. Checkout
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ============================================================
       # 2. Node.js
-      # IMPORTANT:
-      # এখানে cache: npm ব্যবহার করা হয়নি,
-      # কারণ package-lock.json ZIP-এর ভিতরে থাকতে পারে।
+      # ============================================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      # 3. Java
+      # ============================================================
+      # 3. Java 17
+      # ============================================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # ============================================================
       # 4. Android SDK
+      # ============================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: |
             platform-tools
+            platforms;android-35
+            platforms;android-36
+            build-tools;35.0.0
+            build-tools;36.0.0
 
-      # 5. Find Android project / ZIP
+      # ============================================================
+      # 5. Locate Android project
+      # ============================================================
       - name: Locate project files
         shell: bash
         run: |
@@ -56,83 +68,143 @@ jobs:
 
           WRAPPER=""
 
-          # Direct Android project
+          echo "========================================"
+          echo "Searching for Android project..."
+          echo "========================================"
+
+          # --------------------------------------------------------
+          # Case 1: Project is already extracted
+          # --------------------------------------------------------
           if [ -f "$WORK/android/gradlew" ]; then
+
+            echo "Found Android project:"
+            echo "$WORK/android/gradlew"
+
             WRAPPER="$WORK/android/gradlew"
 
           elif [ -f "$WORK/gradlew" ]; then
+
+            echo "Found Gradle wrapper:"
+            echo "$WORK/gradlew"
+
             WRAPPER="$WORK/gradlew"
 
           else
-            # Find project ZIP
-            ZIP_FILE="$(find "$WORK" \
-              -maxdepth 5 \
+
+            # ------------------------------------------------------
+            # Case 2: Project is inside ZIP
+            # ------------------------------------------------------
+
+            echo "No direct Gradle wrapper found."
+            echo "Searching ZIP files..."
+
+            ZIP_FILE=""
+
+            # Prefer Abir AI project ZIPs
+            for candidate in \
+              "$WORK"/AbirAI-*.zip \
+              "$WORK"/*.zip
+            do
+              if [ -f "$candidate" ]; then
+                ZIP_FILE="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "::error::No project ZIP found."
+              exit 1
+            fi
+
+            echo "Selected project ZIP:"
+            echo "$ZIP_FILE"
+
+            echo ""
+            echo "Extracting project..."
+
+            unzip -oq "$ZIP_FILE" -d "$EXTRACT"
+
+            # ------------------------------------------------------
+            # Find Gradle wrapper inside extracted project
+            # ------------------------------------------------------
+            WRAPPER="$(find "$EXTRACT" \
               -type f \
-              -name '*.zip' \
-              ! -path '*/.git/*' \
+              -name gradlew \
+              ! -path '*/node_modules/*' \
+              ! -path '*/.gradle/*' \
               -print -quit || true)"
 
-            if [ -n "$ZIP_FILE" ]; then
-              echo "Found project ZIP:"
-              echo "$ZIP_FILE"
-
-              echo "Extracting project ZIP..."
-              unzip -oq "$ZIP_FILE" -d "$EXTRACT"
-
-              WRAPPER="$(find "$EXTRACT" \
-                -type f \
-                -name gradlew \
-                ! -path '*/node_modules/*' \
-                -print -quit || true)"
-            fi
           fi
 
-          # Check Gradle wrapper
+          # ========================================================
+          # Validate Gradle wrapper
+          # ========================================================
           if [ -z "$WRAPPER" ] || [ ! -f "$WRAPPER" ]; then
             echo "::error::Gradle wrapper not found."
-            echo "Make sure the project contains android/gradlew."
+            echo ""
+            echo "The project must contain:"
+            echo "android/gradlew"
             exit 1
           fi
 
           ANDROID_DIR="$(cd "$(dirname "$WRAPPER")" && pwd)"
 
-          # Find package.json above Android directory
+          echo ""
+          echo "Android directory:"
+          echo "$ANDROID_DIR"
+
+          # ========================================================
+          # Find package.json
+          # ========================================================
           CURRENT="$ANDROID_DIR"
           PROJECT_ROOT=""
 
           while [ "$CURRENT" != "/" ]; do
+
             if [ -f "$CURRENT/package.json" ]; then
               PROJECT_ROOT="$CURRENT"
               break
             fi
 
             CURRENT="$(dirname "$CURRENT")"
+
           done
 
           if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::package.json not found."
+            echo "::error::package.json not found above Android directory."
             exit 1
           fi
 
-          # Check Gradle wrapper properties
+          # ========================================================
+          # Validate Gradle wrapper properties
+          # ========================================================
           if [ ! -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "::error::Gradle wrapper properties missing."
+            echo "::error::gradle-wrapper.properties is missing."
             exit 1
           fi
 
+          # ========================================================
+          # Export paths
+          # ========================================================
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
           echo ""
-          echo "=============================="
-          echo "Project root:"
+          echo "========================================"
+          echo "PROJECT ROOT:"
           echo "$PROJECT_ROOT"
           echo ""
-          echo "Android directory:"
+          echo "ANDROID DIRECTORY:"
           echo "$ANDROID_DIR"
-          echo "=============================="
+          echo "========================================"
 
+          echo ""
+          echo "Project files:"
+          ls -la "$PROJECT_ROOT"
+
+      # ============================================================
       # 6. Install npm dependencies
+      # ============================================================
       - name: Install dependencies
         shell: bash
         run: |
@@ -140,26 +212,33 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          echo "Installing dependencies..."
+          echo "========================================"
+          echo "Installing npm dependencies..."
+          echo "========================================"
 
           if [ -f package-lock.json ]; then
+
+            echo "package-lock.json found."
             npm ci --legacy-peer-deps
+
           else
+
+            echo "No package-lock.json found."
             npm install --legacy-peer-deps
+
           fi
 
+      # ============================================================
       # 7. Verify environment
-      - name: Verify project and Android SDK
+      # ============================================================
+      - name: Verify environment
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$PROJECT_ROOT"
-
-          echo "Checking project..."
-
-          test -f package.json
-          test -d node_modules
+          echo "========================================"
+          echo "Environment"
+          echo "========================================"
 
           echo ""
           echo "Node:"
@@ -177,19 +256,49 @@ jobs:
           echo "Android SDK:"
           echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-not set}}"
 
+          echo ""
+          echo "ADB:"
+          adb --version || true
+
+          # ========================================================
+          # Verify project
+          # ========================================================
+          cd "$PROJECT_ROOT"
+
+          test -f package.json
+          test -d node_modules
+
+          echo ""
+          echo "package.json:"
+          ls -lh package.json
+
+          # ========================================================
+          # Android setup
+          # ========================================================
           cd "$ANDROID_DIR"
 
           chmod +x gradlew
 
           SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
-          if [ -n "$SDK_PATH" ] && [ ! -f local.properties ]; then
-            printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
+          if [ -z "$SDK_PATH" ]; then
+            echo "::error::Android SDK path not found."
+            exit 1
           fi
 
+          # Create local.properties
+          printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
+
           echo ""
-          echo "Gradle files:"
-          find . -maxdepth 3 -type f \
+          echo "local.properties:"
+          cat local.properties
+
+          echo ""
+          echo "Gradle configuration files:"
+
+          find . \
+            -maxdepth 4 \
+            -type f \
             \( \
               -name 'settings.gradle' \
               -o -name 'settings.gradle.kts' \
@@ -198,7 +307,28 @@ jobs:
             \) \
             -print
 
-      # 8. Build APK
+      # ============================================================
+      # 8. Gradle clean
+      # ============================================================
+      - name: Gradle clean
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$ANDROID_DIR"
+
+          chmod +x gradlew
+
+          echo "Cleaning previous Gradle outputs..."
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            clean
+
+      # ============================================================
+      # 9. Build Release APK
+      # ============================================================
       - name: Build release APK
         shell: bash
         env:
@@ -210,15 +340,19 @@ jobs:
 
           chmod +x gradlew
 
-          echo "Starting Gradle build..."
+          echo "========================================"
+          echo "Building Abir AI Release APK..."
+          echo "========================================"
 
           ./gradlew \
             --no-daemon \
             --stacktrace \
-            --build-cache \
+            --warning-mode all \
             assembleRelease
 
-      # 9. Collect APK
+      # ============================================================
+      # 10. Find generated APK
+      # ============================================================
       - name: Collect APK
         if: success()
         shell: bash
@@ -229,29 +363,40 @@ jobs:
 
           mkdir -p "$OUTPUT"
 
+          echo "Searching for generated APK..."
+
           find "$ANDROID_DIR" \
             -type f \
             -path '*/build/outputs/apk/release/*.apk' \
             -exec cp {} "$OUTPUT/" \;
 
-          if ! find "$OUTPUT" \
+          # --------------------------------------------------------
+          # Verify APK
+          # --------------------------------------------------------
+          APK_COUNT="$(find "$OUTPUT" \
             -maxdepth 1 \
             -type f \
             -name '*.apk' \
-            | grep -q .; then
+            | wc -l)"
 
+          if [ "$APK_COUNT" -eq 0 ]; then
             echo "::error::Release APK was not generated."
             exit 1
           fi
 
           echo ""
-          echo "=============================="
-          echo "Generated APK:"
-          echo "=============================="
+          echo "========================================"
+          echo "GENERATED APK"
+          echo "========================================"
 
           ls -lh "$OUTPUT"
 
-      # 10. Upload APK
+          echo ""
+          echo "APK count: $APK_COUNT"
+
+      # ============================================================
+      # 11. Upload APK
+      # ============================================================
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
