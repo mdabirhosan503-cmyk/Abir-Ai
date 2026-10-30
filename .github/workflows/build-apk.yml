@@ -22,16 +22,11 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo " Searching for Abir AI AAPT-FIXED ZIP"
-          echo "=========================================="
-
           ZIP_FILE=""
 
           for f in \
             "AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip" \
-            "./AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip" \
-            "AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.ZIP"
+            "./AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip"
           do
             if [ -f "$f" ]; then
               ZIP_FILE="$f"
@@ -40,31 +35,15 @@ jobs:
           done
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: AAPT-FIXED ZIP was not found."
-            echo ""
-            echo "ZIP files available in repository:"
+            echo "ERROR: AAPT-FIXED ZIP not found."
             find . -type f -iname "*.zip" -print
-            echo ""
-            echo "Expected:"
-            echo "AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip"
             exit 1
           fi
 
-          echo ""
-          echo "Using FIXED ZIP:"
-          echo "$ZIP_FILE"
-          echo ""
-
-          if [[ "$ZIP_FILE" != *"REFERENCE-UI-EXACT-AAPT-FIXED"* ]]; then
-            echo "ERROR: Wrong ZIP selected."
-            exit 1
-          fi
-
+          echo "Using: $ZIP_FILE"
           cp "$ZIP_FILE" abir-ai-source.zip
 
-          echo "Source ZIP copied successfully."
-
-      - name: Extract Reference UI project
+      - name: Extract project
         shell: bash
         run: |
           set -e
@@ -73,10 +52,6 @@ jobs:
           mkdir -p extracted
 
           unzip -q abir-ai-source.zip -d extracted
-
-          echo "=========================================="
-          echo " Extracted project"
-          echo "=========================================="
 
           find extracted \
             -maxdepth 6 \
@@ -102,121 +77,88 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Android project:"
-          echo "$PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR"
 
-      - name: Verify Reference UI project
+      - name: Verify Android SDK
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo " Verifying Reference UI files"
+          echo " Checking preinstalled Android SDK"
           echo "=========================================="
 
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+
+          if [ -z "$SDK_DIR" ]; then
+            echo "ERROR: Android SDK directory not found."
+            exit 1
+          fi
+
+          if [ ! -d "$SDK_DIR/platforms" ]; then
+            echo "ERROR: Android SDK platforms directory not found."
+            exit 1
+          fi
+
+          if [ ! -d "$SDK_DIR/build-tools" ]; then
+            echo "ERROR: Android SDK build-tools directory not found."
+            exit 1
+          fi
+
           echo ""
-          echo "UI source files:"
-
-          find "$GITHUB_WORKSPACE/extracted" \
-            -type f \
-            \( \
-              -name "index.tsx" \
-              -o -name "index.jsx" \
-              -o -name "App.tsx" \
-              -o -name "App.jsx" \
-            \) \
-            -print | sort
+          echo "Installed Android platforms:"
+          find "$SDK_DIR/platforms" \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type d \
+            -printf '%f\n' | sort || true
 
           echo ""
-          echo "Image/UI assets:"
+          echo "Installed Android build-tools:"
+          find "$SDK_DIR/build-tools" \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type d \
+            -printf '%f\n' | sort || true
 
-          find "$GITHUB_WORKSPACE/extracted" \
-            -type f \
-            \( \
-              -iname "*.png" \
-              -o -iname "*.jpg" \
-              -o -iname "*.jpeg" \
-              -o -iname "*.webp" \
-            \) \
-            -print | head -n 100
+          echo ""
+          echo "Android SDK is available."
 
       - name: Verify AAPT PNG assets
         shell: bash
         run: |
           set -e
 
-          echo "=========================================="
-          echo " Verifying PNG assets"
-          echo "=========================================="
-
           python3 - <<'PY'
           import os
-          import struct
 
           root = "extracted"
-
-          png_files = []
+          signature = b"\x89PNG\r\n\x1a\n"
+          count = 0
 
           for base, _, files in os.walk(root):
               for name in files:
-                  if name.lower().endswith(".png"):
-                      png_files.append(os.path.join(base, name))
+                  if not name.lower().endswith(".png"):
+                      continue
 
-          if not png_files:
-              print("No PNG files found.")
-              raise SystemExit(0)
+                  path = os.path.join(base, name)
 
-          print(f"Found {len(png_files)} PNG file(s).")
+                  with open(path, "rb") as f:
+                      data = f.read(8)
 
-          PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+                  if data != signature:
+                      raise SystemExit(
+                          f"ERROR: Invalid PNG asset: {path}"
+                      )
 
-          for path in png_files:
-              with open(path, "rb") as f:
-                  signature = f.read(8)
+                  count += 1
 
-              if signature != PNG_SIGNATURE:
-                  raise SystemExit(
-                      f"ERROR: Invalid PNG signature: {path}"
-                  )
-
-              print("VALID PNG:", path)
-
-          print("")
-          print("All PNG assets have valid PNG signatures.")
+          print(f"Verified {count} PNG asset(s).")
+          print("PNG verification passed.")
           PY
-
-      - name: Verify Reference Dashboard Asset
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo " Checking dashboard reference asset"
-          echo "=========================================="
-
-          FOUND=0
-
-          while IFS= read -r -d '' FILE; do
-            echo "Found:"
-            echo "$FILE"
-            FOUND=1
-          done < <(
-            find "$GITHUB_WORKSPACE/extracted" \
-              -type f \
-              \( \
-                -iname "abirdashboardreference.png" \
-                -o -iname "*abirdashboardreference*.png" \
-              \) \
-              -print0
-          )
-
-          if [ "$FOUND" -eq 0 ]; then
-            echo "WARNING: Dashboard reference asset was not found."
-            echo "Continuing because the project may use another asset path."
-          else
-            echo ""
-            echo "Dashboard reference asset detected."
-          fi
 
       - name: Verify AndroidManifest
         shell: bash
@@ -229,15 +171,6 @@ jobs:
             echo "ERROR: AndroidManifest.xml not found."
             exit 1
           fi
-
-          echo "=========================================="
-          echo " AndroidManifest.xml"
-          echo "=========================================="
-
-          cat "$MANIFEST"
-
-          echo ""
-          echo "Checking manifest structure..."
 
           python3 - "$MANIFEST" <<'PY'
           import sys
@@ -255,44 +188,32 @@ jobs:
                   "ERROR: <application> element is missing."
               )
 
-          services_in_application = application.findall("service")
-          services_in_manifest = root.findall("service")
+          direct_services = root.findall("service")
 
-          print(
-              "Services inside <application>:",
-              len(services_in_application)
-          )
-
-          print(
-              "Services directly inside <manifest>:",
-              len(services_in_manifest)
-          )
-
-          if services_in_manifest:
+          if direct_services:
               raise SystemExit(
                   "ERROR: <service> found directly under <manifest>."
               )
+
+          services = application.findall("service")
 
           names = [
               s.attrib.get(
                   "{http://schemas.android.com/apk/res/android}name",
                   ""
               )
-              for s in services_in_application
+              for s in services
           ]
 
-          print("Service names:")
-
+          print("Services inside application:")
           for name in names:
               print(" -", name)
 
           if ".CallAssistantService" not in names:
               raise SystemExit(
-                  "ERROR: .CallAssistantService is missing "
-                  "from <application>."
+                  "ERROR: .CallAssistantService is missing."
               )
 
-          print("")
           print("Manifest structure is VALID.")
           PY
 
@@ -312,29 +233,6 @@ jobs:
         with:
           version: 10.12.4
 
-      - name: Setup Android SDK packages
-        shell: bash
-        run: |
-          set -e
-
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          fi
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
       - name: Configure Gradle memory
         shell: bash
         run: |
@@ -344,17 +242,13 @@ jobs:
 
           touch "$GRADLE_PROPERTIES"
 
-          if grep -q "^org.gradle.jvmargs=" "$GRADLE_PROPERTIES"; then
-            sed -i '/^org.gradle.jvmargs=/d' "$GRADLE_PROPERTIES"
-          fi
+          sed -i '/^org.gradle.jvmargs=/d' "$GRADLE_PROPERTIES"
+          sed -i '/^org.gradle.daemon=/d' "$GRADLE_PROPERTIES"
 
           cat >> "$GRADLE_PROPERTIES" <<'EOF'
           org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
           org.gradle.daemon=false
           EOF
-
-          echo "Gradle memory configuration:"
-          grep "^org.gradle" "$GRADLE_PROPERTIES" || true
 
       - name: Install dependencies
         working-directory: ${{ env.PROJECT_DIR }}
@@ -384,10 +278,6 @@ jobs:
           set -e
 
           chmod +x gradlew
-
-          echo "=========================================="
-          echo " Cleaning previous Android build"
-          echo "=========================================="
 
           ./gradlew clean --no-daemon
 
@@ -429,11 +319,6 @@ jobs:
 
           cp "$APK" \
             "release/Abir-AI-5.4.16-REFERENCE-UI-EXACT.apk"
-
-          echo ""
-          echo "=========================================="
-          echo " APK CREATED SUCCESSFULLY"
-          echo "=========================================="
 
           ls -lh \
             "release/Abir-AI-5.4.16-REFERENCE-UI-EXACT.apk"
