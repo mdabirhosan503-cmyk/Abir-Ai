@@ -17,21 +17,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find Reference UI EXACT ZIP
+      - name: Find Reference UI AAPT FIXED ZIP
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo " Searching for Abir AI Reference UI ZIP"
+          echo " Searching for Abir AI AAPT-FIXED ZIP"
           echo "=========================================="
 
           ZIP_FILE=""
 
           for f in \
-            "AbirAI-5.4.16-REFERENCE-UI-EXACT.zip" \
-            "./AbirAI-5.4.16-REFERENCE-UI-EXACT.zip" \
-            "AbirAI-5.4.16-REFERENCE-UI-EXACT.ZIP"
+            "AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip" \
+            "./AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip" \
+            "AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.ZIP"
           do
             if [ -f "$f" ]; then
               ZIP_FILE="$f"
@@ -40,22 +40,22 @@ jobs:
           done
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Reference UI EXACT ZIP was not found."
+            echo "ERROR: AAPT-FIXED ZIP was not found."
             echo ""
             echo "ZIP files available in repository:"
             find . -type f -iname "*.zip" -print
             echo ""
             echo "Expected:"
-            echo "AbirAI-5.4.16-REFERENCE-UI-EXACT.zip"
+            echo "AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip"
             exit 1
           fi
 
           echo ""
-          echo "Using ZIP:"
+          echo "Using FIXED ZIP:"
           echo "$ZIP_FILE"
           echo ""
 
-          if [[ "$ZIP_FILE" != *"REFERENCE-UI-EXACT"* ]]; then
+          if [[ "$ZIP_FILE" != *"REFERENCE-UI-EXACT-AAPT-FIXED"* ]]; then
             echo "ERROR: Wrong ZIP selected."
             exit 1
           fi
@@ -79,7 +79,7 @@ jobs:
           echo "=========================================="
 
           find extracted \
-            -maxdepth 5 \
+            -maxdepth 6 \
             \( -name gradlew -o -name package.json \) \
             -print | sort
 
@@ -139,6 +139,84 @@ jobs:
               -o -iname "*.webp" \
             \) \
             -print | head -n 100
+
+      - name: Verify AAPT PNG assets
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo " Verifying PNG assets"
+          echo "=========================================="
+
+          python3 - <<'PY'
+          import os
+          import struct
+
+          root = "extracted"
+
+          png_files = []
+
+          for base, _, files in os.walk(root):
+              for name in files:
+                  if name.lower().endswith(".png"):
+                      png_files.append(os.path.join(base, name))
+
+          if not png_files:
+              print("No PNG files found.")
+              raise SystemExit(0)
+
+          print(f"Found {len(png_files)} PNG file(s).")
+
+          PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+          for path in png_files:
+              with open(path, "rb") as f:
+                  signature = f.read(8)
+
+              if signature != PNG_SIGNATURE:
+                  raise SystemExit(
+                      f"ERROR: Invalid PNG signature: {path}"
+                  )
+
+              print("VALID PNG:", path)
+
+          print("")
+          print("All PNG assets have valid PNG signatures.")
+          PY
+
+      - name: Verify Reference Dashboard Asset
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo " Checking dashboard reference asset"
+          echo "=========================================="
+
+          FOUND=0
+
+          while IFS= read -r -d '' FILE; do
+            echo "Found:"
+            echo "$FILE"
+            FOUND=1
+          done < <(
+            find "$GITHUB_WORKSPACE/extracted" \
+              -type f \
+              \( \
+                -iname "abirdashboardreference.png" \
+                -o -iname "*abirdashboardreference*.png" \
+              \) \
+              -print0
+          )
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "WARNING: Dashboard reference asset was not found."
+            echo "Continuing because the project may use another asset path."
+          else
+            echo ""
+            echo "Dashboard reference asset detected."
+          fi
 
       - name: Verify AndroidManifest
         shell: bash
@@ -257,6 +335,27 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+      - name: Configure Gradle memory
+        shell: bash
+        run: |
+          set -e
+
+          GRADLE_PROPERTIES="$PROJECT_DIR/gradle.properties"
+
+          touch "$GRADLE_PROPERTIES"
+
+          if grep -q "^org.gradle.jvmargs=" "$GRADLE_PROPERTIES"; then
+            sed -i '/^org.gradle.jvmargs=/d' "$GRADLE_PROPERTIES"
+          fi
+
+          cat >> "$GRADLE_PROPERTIES" <<'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          org.gradle.daemon=false
+          EOF
+
+          echo "Gradle memory configuration:"
+          grep "^org.gradle" "$GRADLE_PROPERTIES" || true
+
       - name: Install dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
@@ -278,6 +377,20 @@ jobs:
           xargs -0 -r sed -i \
             's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g'
 
+      - name: Clean Android build
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          chmod +x gradlew
+
+          echo "=========================================="
+          echo " Cleaning previous Android build"
+          echo "=========================================="
+
+          ./gradlew clean --no-daemon
+
       - name: Build Release APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
@@ -289,6 +402,7 @@ jobs:
           echo "=========================================="
           echo " Building Abir AI 5.4.16"
           echo " Reference UI EXACT"
+          echo " AAPT-FIXED"
           echo "=========================================="
 
           ./gradlew \
