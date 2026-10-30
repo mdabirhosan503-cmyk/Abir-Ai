@@ -5,531 +5,244 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "AbirAI-*.zip"
-      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
 
-concurrency:
-  group: abir-ai-apk-build
-  cancel-in-progress: true
-
 jobs:
   build:
-    name: Build Abir AI 5.4.16 APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
-
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 2. FIND + EXTRACT ABIR AI 5.4.16 ZIP
-      # ============================================================
-      - name: Find and extract Abir AI ZIP
+      - name: Find Abir AI v2 ZIP
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          echo "Searching for Abir AI ZIP..."
+          echo "Searching for the corrected v2 ZIP..."
 
-          # Prefer the fixed 5.4.16 ZIP.
           ZIP_FILE=""
 
-          if [ -f "$GITHUB_WORKSPACE/AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED.zip" ]; then
-            ZIP_FILE="$GITHUB_WORKSPACE/AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED.zip"
-          else
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 3 \
-              -type f \
-              -name 'AbirAI-5.4.16*.zip' \
-              -print | sort | tail -n 1)"
-          fi
+          # Prefer the corrected v2 ZIP ONLY
+          for f in \
+            "AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED-v2.zip" \
+            "./AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED-v2.zip" \
+            "AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED-v2.ZIP"
+          do
+            if [ -f "$f" ]; then
+              ZIP_FILE="$f"
+              break
+            fi
+          done
 
-          if [ -z "${ZIP_FILE:-}" ] || [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Abir AI 5.4.16 ZIP file not found."
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Corrected v2 ZIP was not found."
             echo ""
-            echo "ZIP files found:"
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 3 \
-              -type f \
-              -name '*.zip' \
-              -print || true
+            echo "Files available in repository:"
+            find . -maxdepth 3 -type f -iname "*.zip" -print
             exit 1
           fi
 
-          echo "=============================================="
-          echo "SELECTED ABIR AI ZIP"
-          echo "=============================================="
+          echo "Using:"
           echo "$ZIP_FILE"
 
-          rm -rf "$GITHUB_WORKSPACE/extracted"
-          mkdir -p "$GITHUB_WORKSPACE/extracted"
-
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/extracted"
-
-          echo ""
-          echo "Extracted project structure:"
-          find "$GITHUB_WORKSPACE/extracted" \
-            -maxdepth 2 \
-            -type f \
-            \( -name "package.json" -o -name "gradlew" \) \
-            -print || true
-
-          # --------------------------------------------------------
-          # Find project root.
-          # Expected structure:
-          #
-          # extracted/
-          #   package.json
-          #   android/
-          #     gradlew
-          # --------------------------------------------------------
-
-          PROJECT_DIR=""
-
-          if [ -f "$GITHUB_WORKSPACE/extracted/package.json" ] && \
-             [ -f "$GITHUB_WORKSPACE/extracted/android/gradlew" ]; then
-
-            PROJECT_DIR="$GITHUB_WORKSPACE/extracted"
-
-          else
-
-            GRADLEW="$(find "$GITHUB_WORKSPACE/extracted" \
-              -type f \
-              -name "gradlew" \
-              ! -path "*/node_modules/*" \
-              -print | head -n 1)"
-
-            if [ -n "${GRADLEW:-}" ]; then
-              CANDIDATE="$(dirname "$(dirname "$GRADLEW")")"
-
-              if [ -f "$CANDIDATE/package.json" ]; then
-                PROJECT_DIR="$CANDIDATE"
-              fi
-            fi
-
-          fi
-
-          if [ -z "${PROJECT_DIR:-}" ]; then
-            echo "::error::Could not locate Abir AI project root."
-
-            echo ""
-            echo "package.json files:"
-            find "$GITHUB_WORKSPACE/extracted" \
-              -type f \
-              -name "package.json" \
-              -print || true
-
-            echo ""
-            echo "gradlew files:"
-            find "$GITHUB_WORKSPACE/extracted" \
-              -type f \
-              -name "gradlew" \
-              -print || true
-
+          # Extra safety check:
+          # The old broken ZIP must never be selected.
+          if [[ "$ZIP_FILE" != *"FIXED-v2"* ]]; then
+            echo "ERROR: Wrong ZIP selected."
             exit 1
           fi
 
-          if [ ! -f "$PROJECT_DIR/package.json" ]; then
-            echo "::error::package.json not found."
+          cp "$ZIP_FILE" abir-ai-source.zip
+
+      - name: Extract corrected project
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -q abir-ai-source.zip -d extracted
+
+          echo "Extracted project:"
+          find extracted -maxdepth 4 -name gradlew -o -name package.json | sort
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          set -e
+
+          GRADLEW=$(find "$GITHUB_WORKSPACE/extracted" -type f -name gradlew | head -n 1)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew not found."
             exit 1
           fi
 
-          if [ ! -f "$PROJECT_DIR/android/gradlew" ]; then
-            echo "::error::android/gradlew not found."
-            exit 1
-          fi
+          PROJECT_DIR="$(dirname "$GRADLEW")"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo ""
-          echo "=============================================="
-          echo "ABIR AI PROJECT FOUND"
-          echo "=============================================="
-          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "Android project:"
+          echo "$PROJECT_DIR"
 
-      # ============================================================
-      # 3. NODE.JS
-      # ============================================================
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: ""
+      - name: Verify corrected AndroidManifest
+        shell: bash
+        run: |
+          set -e
 
-      # ============================================================
-      # 4. PNPM
-      # ============================================================
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: "10.12.4"
+          MANIFEST="$GITHUB_WORKSPACE/extracted/modules/abir-app-launcher/android/src/main/AndroidManifest.xml"
 
-      # ============================================================
-      # 5. JAVA 17
-      # ============================================================
-      - name: Set up Java 17
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERROR: abir-app-launcher AndroidManifest.xml not found."
+            exit 1
+          fi
+
+          echo "===== AndroidManifest.xml ====="
+          cat "$MANIFEST"
+          echo "==============================="
+
+          # The CallAssistantService MUST be inside <application>.
+          python3 - "$MANIFEST" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = sys.argv[1]
+
+          tree = ET.parse(path)
+          root = tree.getroot()
+
+          application = root.find("application")
+
+          if application is None:
+              raise SystemExit("ERROR: <application> element is missing")
+
+          services_in_application = application.findall("service")
+          services_in_manifest = root.findall("service")
+
+          print("Services inside <application>:", len(services_in_application))
+          print("Services directly inside <manifest>:", len(services_in_manifest))
+
+          if services_in_manifest:
+              raise SystemExit(
+                  "ERROR: Found <service> directly under <manifest>. "
+                  "Manifest is still broken."
+              )
+
+          names = [
+              s.attrib.get("{http://schemas.android.com/apk/res/android}name", "")
+              for s in services_in_application
+          ]
+
+          print("Service names:", names)
+
+          if ".CallAssistantService" not in names:
+              raise SystemExit(
+                  "ERROR: .CallAssistantService is missing from <application>"
+              )
+
+          print("Manifest structure is VALID.")
+          PY
+
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ============================================================
-      # 6. ANDROID SDK
-      #
-      # Do NOT use android-actions/setup-android.
-      # This avoids the previous obsolete "tools" package error.
-      # ============================================================
-      - name: Configure Android SDK
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Android SDK packages
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          if [ -n "${ANDROID_HOME:-}" ]; then
-            SDK_ROOT="$ANDROID_HOME"
-          elif [ -n "${ANDROID_SDK_ROOT:-}" ]; then
-            SDK_ROOT="$ANDROID_SDK_ROOT"
-          else
-            SDK_ROOT="/usr/local/lib/android/sdk"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           fi
 
-          if [ ! -d "$SDK_ROOT" ]; then
-            echo "::error::Android SDK not found: $SDK_ROOT"
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
             exit 1
           fi
 
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
 
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-
-          SDKMANAGER=""
-
-          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          elif [ -x "$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager" ]; then
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
-          elif command -v sdkmanager >/dev/null 2>&1; then
-            SDKMANAGER="$(command -v sdkmanager)"
-          fi
-
-          if [ -z "${SDKMANAGER:-}" ]; then
-            echo "::error::sdkmanager not found."
-            exit 1
-          fi
-
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-
-          echo "Android SDK:"
-          echo "$SDK_ROOT"
-
-          echo "SDK Manager:"
-          echo "$SDKMANAGER"
-
-      # ============================================================
-      # 7. ACCEPT LICENSES
-      # ============================================================
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          echo "Android SDK licenses processed."
-
-      # ============================================================
-      # 8. INSTALL REQUIRED SDK
-      # ============================================================
-      - name: Install required Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          "$SDKMANAGER" --install \
+          "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          echo ""
-          echo "Installed Android SDK packages:"
-          "$SDKMANAGER" --list_installed | head -100 || true
-
-      # ============================================================
-      # 9. INSTALL JAVASCRIPT DEPENDENCIES
-      # ============================================================
-      - name: Install JavaScript dependencies
+      - name: Install dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
-
-          echo "Installing pnpm dependencies..."
+          set -e
 
           pnpm install --no-frozen-lockfile
 
-          echo ""
-          echo "Dependencies installed successfully."
-
-      # ============================================================
-      # 10. VERIFY PROJECT VERSION
-      # ============================================================
-      - name: Verify Abir AI 5.4.16
+      - name: Fix ResolveInfoFlags compatibility
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          echo "Checking package.json..."
+          find . -type f \( -name "*.kt" -o -name "*.java" \) -print0 |
+          xargs -0 -r sed -i \
+            's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g'
 
-          node - <<'NODE'
-          const fs = require("fs");
-
-          const pkg = JSON.parse(
-            fs.readFileSync("package.json", "utf8")
-          );
-
-          console.log("package.json version:", pkg.version);
-
-          if (pkg.version !== "5.4.16") {
-            console.error(
-              `Expected package.json version 5.4.16 but found ${pkg.version}`
-            );
-            process.exit(1);
-          }
-          NODE
-
-          echo ""
-          echo "Checking Android app version..."
-
-          APP_GRADLE="android/app/build.gradle"
-
-          if [ ! -f "$APP_GRADLE" ]; then
-            echo "::error::android/app/build.gradle not found."
-            exit 1
-          fi
-
-          # Make sure the APK itself reports version 5.4.16.
-          sed -i 's/versionName "[^"]*"/versionName "5.4.16"/' "$APP_GRADLE"
-
-          echo ""
-          grep -n "versionCode\|versionName" "$APP_GRADLE" || true
-
-          echo ""
-          echo "Abir AI version verified as 5.4.16."
-
-      # ============================================================
-      # 11. PREPARE GRADLE
-      # ============================================================
-      - name: Prepare Gradle
-        working-directory: ${{ env.PROJECT_DIR }}/android
+      - name: Build Release APK
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           chmod +x gradlew
 
-          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -z "$SDK_PATH" ]; then
-            echo "::error::Android SDK path is empty."
-            exit 1
-          fi
-
-          printf 'sdk.dir=%s\n' "$SDK_PATH" > local.properties
-
-          echo "local.properties:"
-          cat local.properties
-
-          echo ""
-          echo "Gradle version:"
-          ./gradlew --version
-
-      # ============================================================
-      # 12. VERIFY IMPORTANT ABIR AI FILES
-      # ============================================================
-      - name: Verify Abir AI modules
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking important Abir AI files..."
-
-          REQUIRED_FILES=(
-            "app/index.tsx"
-            "assistant/offlineBrain.ts"
-            "assistant/conversationEngine.ts"
-            "assistant/voiceInput.ts"
-            "modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/CallAssistantService.kt"
-            "modules/abir-app-launcher/android/src/main/java/expo/modules/abirapp/CallAssistantPrefs.kt"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$FILE" ]; then
-              echo "::error::Required file not found: $FILE"
-              exit 1
-            fi
-
-            echo "OK: $FILE"
-          done
-
-          echo ""
-          echo "All required Abir AI files are present."
-
-      # ============================================================
-      # 13. CHECK TIME RESPONSE FIX
-      # ============================================================
-      - name: Verify time response cleanup
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FILE="assistant/offlineBrain.ts"
-
-          if [ ! -f "$FILE" ]; then
-            echo "::error::offlineBrain.ts not found."
-            exit 1
-          fi
-
-          echo "Checking offline time-response logic..."
-
-          grep -n -i \
-            -E "time|clock|সময়|ঘড়ি" \
-            "$FILE" | head -80 || true
-
-          echo ""
-          echo "Time response check completed."
-
-      # ============================================================
-      # 14. BUILD RELEASE APK
-      # ============================================================
-      - name: Build Release APK
-        working-directory: ${{ env.PROJECT_DIR }}/android
-        shell: bash
-        env:
-          NODE_ENV: production
-        run: |
-          set -euo pipefail
-
-          echo "=============================================="
-          echo "BUILDING ABIR AI 5.4.16 RELEASE APK"
-          echo "=============================================="
-
           ./gradlew \
+            :app:assembleRelease \
             --no-daemon \
-            --stacktrace \
-            --build-cache \
-            assembleRelease
+            --stacktrace
 
-      # ============================================================
-      # 15. COLLECT APK
-      # ============================================================
-      - name: Find generated APK
+      - name: Collect APK
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          mkdir -p "$GITHUB_WORKSPACE/release"
-
-          APK="$(find "$PROJECT_DIR/android" \
+          APK=$(find "$PROJECT_DIR" \
             -type f \
-            -path '*/build/outputs/apk/release/*.apk' \
-            ! -name '*-unsigned.apk' \
-            -print | sort | head -n 1)"
+            -path "*/build/outputs/apk/release/*.apk" |
+            head -n 1)
 
-          if [ -z "${APK:-}" ]; then
-            echo "::error::No release APK was generated."
-
-            echo ""
-            echo "Searching all APK files:"
-            find "$PROJECT_DIR/android" \
-              -type f \
-              -name '*.apk' \
-              -print || true
-
+          if [ -z "$APK" ]; then
+            echo "ERROR: Release APK was not generated."
             exit 1
           fi
 
-          echo "Generated APK:"
-          echo "$APK"
+          mkdir -p release
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Abir-AI-5.4.16-release.apk"
+          cp "$APK" "release/Abir-AI-5.4.16-release.apk"
 
-          echo ""
-          echo "Final APK:"
-          ls -lh "$GITHUB_WORKSPACE/release/"
+          echo "APK created:"
+          ls -lh release/Abir-AI-5.4.16-release.apk
 
-      # ============================================================
-      # 16. VERIFY APK
-      # ============================================================
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$GITHUB_WORKSPACE/release/Abir-AI-5.4.16-release.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "::error::APK does not exist."
-            exit 1
-          fi
-
-          SIZE="$(stat -c%s "$APK")"
-
-          echo "APK:"
-          echo "$APK"
-
-          echo "APK size: $SIZE bytes"
-
-          if [ "$SIZE" -le 100000 ]; then
-            echo "::error::APK is suspiciously small."
-            exit 1
-          fi
-
-          if ! file "$APK" | grep -qi "zip\|android"; then
-            echo "::error::Generated file does not look like an APK."
-            file "$APK" || true
-            exit 1
-          fi
-
-          echo ""
-          echo "APK verification passed."
-
-      # ============================================================
-      # 17. UPLOAD APK
-      # ============================================================
-      - name: Upload Abir AI 5.4.16 APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Abir-AI-5.4.16-Release-APK
           path: release/Abir-AI-5.4.16-release.apk
           if-no-files-found: error
-          retention-days: 14
-
-      # ============================================================
-      # 18. SUCCESS
-      # ============================================================
-      - name: Build success
-        if: success()
-        shell: bash
-        run: |
-          echo ""
-          echo "=============================================="
-          echo "       ABIR AI 5.4.16 BUILD SUCCESS"
-          echo "=============================================="
-          echo ""
-          echo "APK: Abir-AI-5.4.16-release.apk"
-          echo "Artifact: Abir-AI-5.4.16-Release-APK"
-          echo ""
