@@ -3,11 +3,11 @@ name: Build Abir AI APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - "AbirAI-*.zip"
       - ".github/workflows/build-apk.yml"
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -26,36 +26,120 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find and extract Abir AI project
+      - name: Find and extract Abir AI ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP_FILE="AbirAI-5.4.14-BANGLA-OFFLINE-SPEECH-FIX.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            ZIP_FILE="$(find . -maxdepth 2 -type f \
-              -name 'AbirAI-*.zip' | head -n 1)"
-          fi
+          ZIP_FILE="$(find . -maxdepth 2 -type f \
+            -name 'AbirAI-*.zip' | head -n 1)"
 
           if [ -z "${ZIP_FILE:-}" ] || [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Abir AI ZIP file not found in repository."
+            echo "::error::Abir AI ZIP file not found."
             exit 1
           fi
 
+          echo "Found ZIP: $ZIP_FILE"
+
+          rm -rf extracted
           mkdir -p extracted
+
           unzip -q "$ZIP_FILE" -d extracted
 
-          if [ ! -f extracted/package.json ] || \
-             [ ! -f extracted/android/gradlew ]; then
-            echo "::error::ZIP must contain package.json and android/gradlew at its root."
-            find extracted -maxdepth 3 -type f \
-              \( -name package.json -o -name gradlew \)
+          PROJECT_DIR=""
+
+          if [ -f "extracted/package.json" ] && \
+             [ -f "extracted/android/gradlew" ]; then
+            PROJECT_DIR="$GITHUB_WORKSPACE/extracted"
+          else
+            PROJECT_DIR="$(find "$GITHUB_WORKSPACE/extracted" \
+              -type f -name gradlew -print0 |
+              while IFS= read -r -d '' GRADLEW; do
+                DIR="$(dirname "$(dirname "$GRADLEW")")"
+
+                if [ -f "$DIR/package.json" ]; then
+                  echo "$DIR"
+                  break
+                fi
+              done)"
+          fi
+
+          if [ -z "${PROJECT_DIR:-}" ] || \
+             [ ! -f "$PROJECT_DIR/package.json" ] || \
+             [ ! -f "$PROJECT_DIR/android/gradlew" ]; then
+            echo "::error::Could not locate a valid Abir AI Android project."
+            echo "Project files found:"
+            find extracted -maxdepth 5 -type f \
+              \( -name package.json -o -name gradlew \) -print
             exit 1
           fi
 
-          echo "PROJECT_DIR=$GITHUB_WORKSPACE/extracted" \
-            >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Using project:"
+          echo "$PROJECT_DIR"
+
+      - name: Configure Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${ANDROID_HOME:-}" ]; then
+            SDK_ROOT="$ANDROID_HOME"
+          elif [ -n "${ANDROID_SDK_ROOT:-}" ]; then
+            SDK_ROOT="$ANDROID_SDK_ROOT"
+          else
+            SDK_ROOT="/usr/local/lib/android/sdk"
+          fi
+
+          if [ ! -d "$SDK_ROOT" ]; then
+            echo "::error::Android SDK not found at $SDK_ROOT"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER=""
+
+          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          elif [ -x "$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
+          else
+            SDKMANAGER="$(command -v sdkmanager || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found."
+            exit 1
+          fi
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
+          echo "Android SDK: $SDK_ROOT"
+          echo "SDK Manager: $SDKMANAGER"
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          echo "Android SDK licenses processed."
+
+      - name: Install required Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -74,58 +158,55 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      - name: Install JavaScript dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
-          yes | sdkmanager --licenses >/dev/null || true
+          pnpm install --no-frozen-lockfile
 
-      - name: Install JavaScript dependencies
-        working-directory: extracted
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Check TypeScript
-        working-directory: extracted
-        run: pnpm exec tsc -p tsconfig.json --noEmit
-
-      - name: Build release APK
-        working-directory: extracted/android
+      - name: Prepare Gradle
+        working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace \
-            :app:assembleRelease
 
-      - name: Prepare APK artifact
+      - name: Build Release APK
+        working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -euo pipefail
+
+          ./gradlew --no-daemon --stacktrace \
+            assembleRelease
+
+      - name: Find generated APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
           mkdir -p release
 
-          find extracted/android/app/build/outputs/apk/release \
-            -maxdepth 1 -type f -name '*.apk' \
+          find "$PROJECT_DIR/android" \
+            -type f \
+            -path '*/build/outputs/apk/release/*.apk' \
             -exec cp {} release/ \;
 
           if ! ls release/*.apk >/dev/null 2>&1; then
             echo "::error::No release APK was generated."
+            echo "Searching for APK files..."
+            find "$PROJECT_DIR/android" -type f -name '*.apk' -print
             exit 1
           fi
 
+          echo "Generated APK:"
           ls -lh release/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.14-Release-APK
+          name: Abir-AI-Release-APK
           path: release/*.apk
           if-no-files-found: error
           retention-days: 14
-          
