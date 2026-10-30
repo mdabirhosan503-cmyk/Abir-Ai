@@ -17,20 +17,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find Abir AI v2 ZIP
+      - name: Find Reference UI EXACT ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Searching for the corrected v2 ZIP..."
+          echo "=========================================="
+          echo " Searching for Abir AI Reference UI ZIP"
+          echo "=========================================="
 
           ZIP_FILE=""
 
-          # Prefer the corrected v2 ZIP ONLY
           for f in \
-            "AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED-v2.zip" \
-            "./AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED-v2.zip" \
-            "AbirAI-5.4.16-NATURAL-CONVERSATION-FIXED-v2.ZIP"
+            "AbirAI-5.4.16-REFERENCE-UI-EXACT.zip" \
+            "./AbirAI-5.4.16-REFERENCE-UI-EXACT.zip" \
+            "AbirAI-5.4.16-REFERENCE-UI-EXACT.ZIP"
           do
             if [ -f "$f" ]; then
               ZIP_FILE="$f"
@@ -39,26 +40,31 @@ jobs:
           done
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Corrected v2 ZIP was not found."
+            echo "ERROR: Reference UI EXACT ZIP was not found."
             echo ""
-            echo "Files available in repository:"
-            find . -maxdepth 3 -type f -iname "*.zip" -print
+            echo "ZIP files available in repository:"
+            find . -type f -iname "*.zip" -print
+            echo ""
+            echo "Expected:"
+            echo "AbirAI-5.4.16-REFERENCE-UI-EXACT.zip"
             exit 1
           fi
 
-          echo "Using:"
+          echo ""
+          echo "Using ZIP:"
           echo "$ZIP_FILE"
+          echo ""
 
-          # Extra safety check:
-          # The old broken ZIP must never be selected.
-          if [[ "$ZIP_FILE" != *"FIXED-v2"* ]]; then
+          if [[ "$ZIP_FILE" != *"REFERENCE-UI-EXACT"* ]]; then
             echo "ERROR: Wrong ZIP selected."
             exit 1
           fi
 
           cp "$ZIP_FILE" abir-ai-source.zip
 
-      - name: Extract corrected project
+          echo "Source ZIP copied successfully."
+
+      - name: Extract Reference UI project
         shell: bash
         run: |
           set -e
@@ -68,15 +74,24 @@ jobs:
 
           unzip -q abir-ai-source.zip -d extracted
 
-          echo "Extracted project:"
-          find extracted -maxdepth 4 -name gradlew -o -name package.json | sort
+          echo "=========================================="
+          echo " Extracted project"
+          echo "=========================================="
+
+          find extracted \
+            -maxdepth 5 \
+            \( -name gradlew -o -name package.json \) \
+            -print | sort
 
       - name: Find Android project
         shell: bash
         run: |
           set -e
 
-          GRADLEW=$(find "$GITHUB_WORKSPACE/extracted" -type f -name gradlew | head -n 1)
+          GRADLEW=$(find "$GITHUB_WORKSPACE/extracted" \
+            -type f \
+            -name gradlew \
+            | head -n 1)
 
           if [ -z "$GRADLEW" ]; then
             echo "ERROR: gradlew not found."
@@ -90,7 +105,42 @@ jobs:
           echo "Android project:"
           echo "$PROJECT_DIR"
 
-      - name: Verify corrected AndroidManifest
+      - name: Verify Reference UI project
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo " Verifying Reference UI files"
+          echo "=========================================="
+
+          echo ""
+          echo "UI source files:"
+
+          find "$GITHUB_WORKSPACE/extracted" \
+            -type f \
+            \( \
+              -name "index.tsx" \
+              -o -name "index.jsx" \
+              -o -name "App.tsx" \
+              -o -name "App.jsx" \
+            \) \
+            -print | sort
+
+          echo ""
+          echo "Image/UI assets:"
+
+          find "$GITHUB_WORKSPACE/extracted" \
+            -type f \
+            \( \
+              -iname "*.png" \
+              -o -iname "*.jpg" \
+              -o -iname "*.jpeg" \
+              -o -iname "*.webp" \
+            \) \
+            -print | head -n 100
+
+      - name: Verify AndroidManifest
         shell: bash
         run: |
           set -e
@@ -98,15 +148,19 @@ jobs:
           MANIFEST="$GITHUB_WORKSPACE/extracted/modules/abir-app-launcher/android/src/main/AndroidManifest.xml"
 
           if [ ! -f "$MANIFEST" ]; then
-            echo "ERROR: abir-app-launcher AndroidManifest.xml not found."
+            echo "ERROR: AndroidManifest.xml not found."
             exit 1
           fi
 
-          echo "===== AndroidManifest.xml ====="
-          cat "$MANIFEST"
-          echo "==============================="
+          echo "=========================================="
+          echo " AndroidManifest.xml"
+          echo "=========================================="
 
-          # The CallAssistantService MUST be inside <application>.
+          cat "$MANIFEST"
+
+          echo ""
+          echo "Checking manifest structure..."
+
           python3 - "$MANIFEST" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
@@ -119,32 +173,48 @@ jobs:
           application = root.find("application")
 
           if application is None:
-              raise SystemExit("ERROR: <application> element is missing")
+              raise SystemExit(
+                  "ERROR: <application> element is missing."
+              )
 
           services_in_application = application.findall("service")
           services_in_manifest = root.findall("service")
 
-          print("Services inside <application>:", len(services_in_application))
-          print("Services directly inside <manifest>:", len(services_in_manifest))
+          print(
+              "Services inside <application>:",
+              len(services_in_application)
+          )
+
+          print(
+              "Services directly inside <manifest>:",
+              len(services_in_manifest)
+          )
 
           if services_in_manifest:
               raise SystemExit(
-                  "ERROR: Found <service> directly under <manifest>. "
-                  "Manifest is still broken."
+                  "ERROR: <service> found directly under <manifest>."
               )
 
           names = [
-              s.attrib.get("{http://schemas.android.com/apk/res/android}name", "")
+              s.attrib.get(
+                  "{http://schemas.android.com/apk/res/android}name",
+                  ""
+              )
               for s in services_in_application
           ]
 
-          print("Service names:", names)
+          print("Service names:")
+
+          for name in names:
+              print(" -", name)
 
           if ".CallAssistantService" not in names:
               raise SystemExit(
-                  "ERROR: .CallAssistantService is missing from <application>"
+                  "ERROR: .CallAssistantService is missing "
+                  "from <application>."
               )
 
+          print("")
           print("Manifest structure is VALID.")
           PY
 
@@ -201,7 +271,10 @@ jobs:
         run: |
           set -e
 
-          find . -type f \( -name "*.kt" -o -name "*.java" \) -print0 |
+          find . \
+            -type f \
+            \( -name "*.kt" -o -name "*.java" \) \
+            -print0 |
           xargs -0 -r sed -i \
             's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g'
 
@@ -212,6 +285,11 @@ jobs:
           set -e
 
           chmod +x gradlew
+
+          echo "=========================================="
+          echo " Building Abir AI 5.4.16"
+          echo " Reference UI EXACT"
+          echo "=========================================="
 
           ./gradlew \
             :app:assembleRelease \
@@ -235,14 +313,20 @@ jobs:
 
           mkdir -p release
 
-          cp "$APK" "release/Abir-AI-5.4.16-release.apk"
+          cp "$APK" \
+            "release/Abir-AI-5.4.16-REFERENCE-UI-EXACT.apk"
 
-          echo "APK created:"
-          ls -lh release/Abir-AI-5.4.16-release.apk
+          echo ""
+          echo "=========================================="
+          echo " APK CREATED SUCCESSFULLY"
+          echo "=========================================="
+
+          ls -lh \
+            "release/Abir-AI-5.4.16-REFERENCE-UI-EXACT.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.16-Release-APK
-          path: release/Abir-AI-5.4.16-release.apk
+          name: Abir-AI-5.4.16-REFERENCE-UI-EXACT
+          path: release/Abir-AI-5.4.16-REFERENCE-UI-EXACT.apk
           if-no-files-found: error
