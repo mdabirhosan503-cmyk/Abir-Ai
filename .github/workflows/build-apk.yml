@@ -1,3 +1,4 @@
+
 name: Build Abir AI 5.4.24
 
 on:
@@ -21,9 +22,11 @@ jobs:
 
     env:
       ABIR_VERSION: "5.4.24"
-      ANDROID_SDK_ROOT: "/usr/local/lib/android/sdk"
-      ANDROID_HOME: "/usr/local/lib/android/sdk"
-      EXTRACT_DIR: "${{ github.workspace }}/abir_extracted"
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      EXTRACT_DIR: ${{ github.workspace }}/abir_extracted
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
 
     steps:
       - name: Checkout repository
@@ -46,8 +49,10 @@ jobs:
           version: 10.12.4
           run_install: false
 
-      - name: Verify environment
+      - name: Verify build tools
+        shell: bash
         run: |
+          set -euo pipefail
           node --version
           npm --version
           pnpm --version
@@ -56,13 +61,11 @@ jobs:
       - name: Setup Android SDK
         shell: bash
         run: |
-          set -euxo pipefail
-
-          SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
 
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
-              -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+            SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
           fi
 
           if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
@@ -75,98 +78,115 @@ jobs:
           "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-36" \
-            "build-tools;36.0.0"
+            "build-tools;36.0.0" \
+            "ndk;27.1.12297006"
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
-      - name: Find Abir AI ZIP
+      - name: Find Abir AI source ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
-            \( -iname 'AbirAI-5.4.24*.zip' \
-            -o -iname 'Abir-AI-5.4.24*.zip' \) \
+            \( -iname 'AbirAI-5.4.24*.zip' -o -iname 'Abir-AI-5.4.24*.zip' \) \
             -print | sort | tail -n 1)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "::error::Abir AI 5.4.24 ZIP was not found."
-            find "$GITHUB_WORKSPACE" -type f -iname '*.zip' -print || true
+            echo "::error::Abir AI 5.4.24 source ZIP was not found in the repository."
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -iname '*.zip' -print || true
             exit 1
           fi
 
-          echo "Using: $ZIP_FILE"
+          echo "Using source archive: $ZIP_FILE"
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      - name: Verify and extract ZIP
+      - name: Verify and extract source ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           unzip -tq "$ZIP_FILE"
-
           rm -rf "$EXTRACT_DIR"
           mkdir -p "$EXTRACT_DIR"
-
           unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
 
+          echo "Extracted project markers:"
           find "$EXTRACT_DIR" -maxdepth 5 -type f \
-            \( -name package.json \
-            -o -name gradlew \
-            -o -name settings.gradle \
-            -o -name settings.gradle.kts \) \
-            -print | sort | head -n 100
+            \( -name package.json -o -name pnpm-lock.yaml -o -name gradlew \
+               -o -name settings.gradle -o -name settings.gradle.kts \) \
+            -print | sort | head -n 120
 
-      - name: Detect Android project
+      - name: Detect app root and Android Gradle directory
         shell: bash
         run: |
           set -euo pipefail
 
           PROJECT_ROOT=""
+          GRADLE_DIR=""
 
           while IFS= read -r gradlew; do
-            candidate="$(dirname "$gradlew")"
+            android_dir="$(dirname "$gradlew")"
 
-            if [ -f "$candidate/settings.gradle" ] || \
-               [ -f "$candidate/settings.gradle.kts" ]; then
-              PROJECT_ROOT="$candidate"
-              break
+            if [ ! -f "$android_dir/settings.gradle" ] && [ ! -f "$android_dir/settings.gradle.kts" ]; then
+              continue
             fi
-          done < <(find "$EXTRACT_DIR" -type f -name gradlew -print)
 
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::Android Gradle project not found."
-            find "$EXTRACT_DIR" -type f \
-              \( -name gradlew \
-              -o -name settings.gradle \
-              -o -name settings.gradle.kts \) \
-              -print || true
+            candidate="$android_dir"
+
+            while [ "$candidate" != "$(dirname "$candidate")" ]; do
+              if [ -f "$candidate/package.json" ]; then
+                PROJECT_ROOT="$candidate"
+                GRADLE_DIR="$android_dir"
+                break 2
+              fi
+
+              candidate="$(dirname "$candidate")"
+            done
+          done < <(find "$EXTRACT_DIR" -type f -name gradlew -print | sort)
+
+          if [ -z "$PROJECT_ROOT" ] || [ -z "$GRADLE_DIR" ]; then
+            echo "::error::Could not find a Gradle Android folder and its app-root package.json."
+            find "$EXTRACT_DIR" -type f \( -name package.json -o -name gradlew -o -name settings.gradle \) -print
             exit 1
           fi
 
           PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+          GRADLE_DIR="$(cd "$GRADLE_DIR" && pwd)"
 
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "GRADLE_DIR=$GRADLE_DIR" >> "$GITHUB_ENV"
 
-          echo "Detected project:"
-          echo "$PROJECT_ROOT"
+          echo "App root: $PROJECT_ROOT"
+          echo "Android Gradle root: $GRADLE_DIR"
 
-      - name: Verify project
+      - name: Verify app configuration
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f package.json ]; then
-            node -e '
-              const p=require("./package.json");
-              console.log("Package version:", p.version || "missing");
-              console.log("Expo:", p.dependencies?.expo || "missing");
-              console.log("React Native:", p.dependencies?.["react-native"] || "missing");
-            '
-          fi
+          test -f package.json
+          test -f app.json
 
-      - name: Install dependencies
+          node - <<'NODE'
+          const p = require('./package.json');
+
+          console.log('Package:', p.name);
+          console.log('Version:', p.version);
+          console.log('Expo dependency:', p.devDependencies?.expo || p.dependencies?.expo || 'MISSING');
+          console.log('React Native dependency:', p.devDependencies?.['react-native'] || p.dependencies?.['react-native'] || 'MISSING');
+
+          if (!p.devDependencies?.expo && !p.dependencies?.expo) {
+            throw new Error('Expo dependency missing from package.json');
+          }
+
+          if (!p.devDependencies?.['react-native'] && !p.dependencies?.['react-native']) {
+            throw new Error('React Native dependency missing from package.json');
+          }
+          NODE
+
+      - name: Install JavaScript dependencies
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
@@ -175,82 +195,70 @@ jobs:
           if [ -f pnpm-lock.yaml ]; then
             pnpm install --frozen-lockfile
           else
+            echo "::warning::pnpm-lock.yaml not found; installing without frozen lockfile."
             pnpm install --no-frozen-lockfile
           fi
 
-      - name: Locate Gradle project
+      - name: Diagnose Expo config and Node module resolution
+        working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f "$PROJECT_ROOT/android/gradlew" ]; then
-            GRADLE_DIR="$PROJECT_ROOT/android"
-          elif [ -f "$PROJECT_ROOT/gradlew" ]; then
-            GRADLE_DIR="$PROJECT_ROOT"
-          else
-            echo "::error::gradlew not found."
-            exit 1
-          fi
+          node -e "console.log('expo:', require.resolve('expo/package.json'))"
+          node -e "console.log('react-native:', require.resolve('react-native/package.json'))"
+          node -e "console.log('expo autolinking:', require.resolve('expo-modules-autolinking/package.json'))"
+          node -e "console.log('RN Gradle plugin:', require.resolve('@react-native/gradle-plugin/package.json', {paths:[require.resolve('react-native/package.json')]}))"
 
-          echo "GRADLE_DIR=$GRADLE_DIR" >> "$GITHUB_ENV"
+          pnpm exec expo config --type public --json > "$GITHUB_WORKSPACE/expo-config.json"
+
+          node -e "const c=require('./expo-config.json'); console.log('Expo config OK:', c.name, c.slug, c.version)"
+
+      - name: Prepare Android Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$GRADLE_DIR/gradlew"
+          test -f "$GRADLE_DIR/settings.gradle" || test -f "$GRADLE_DIR/settings.gradle.kts"
 
           chmod +x "$GRADLE_DIR/gradlew"
 
-          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" \
-            > "$GRADLE_DIR/local.properties"
-
-          echo "Gradle directory:"
-          echo "$GRADLE_DIR"
-
-      - name: Apply Android compatibility fix
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          find "$PROJECT_ROOT" -type f \
-            \( -name '*.kt' -o -name '*.kts' -o -name '*.java' \) \
-            -print0 |
-          xargs -0 -r sed -i \
-            's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g'
-
-      - name: Configure Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > "$GRADLE_DIR/local.properties"
 
           touch "$GRADLE_DIR/gradle.properties"
 
-          grep -q '^org.gradle.jvmargs=' \
-            "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
-            >> "$GRADLE_DIR/gradle.properties"
+          grep -q '^org.gradle.jvmargs=' "$GRADLE_DIR/gradle.properties" || \
+            echo 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' >> "$GRADLE_DIR/gradle.properties"
 
-          grep -q '^org.gradle.daemon=' \
-            "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.daemon=false' \
-            >> "$GRADLE_DIR/gradle.properties"
+          grep -q '^org.gradle.daemon=' "$GRADLE_DIR/gradle.properties" || \
+            echo 'org.gradle.daemon=false' >> "$GRADLE_DIR/gradle.properties"
 
-          grep -q '^org.gradle.parallel=' \
-            "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.parallel=false' \
-            >> "$GRADLE_DIR/gradle.properties"
+          grep -q '^org.gradle.parallel=' "$GRADLE_DIR/gradle.properties" || \
+            echo 'org.gradle.parallel=false' >> "$GRADLE_DIR/gradle.properties"
 
-          grep -q '^org.gradle.caching=' \
-            "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.caching=true' \
-            >> "$GRADLE_DIR/gradle.properties"
-
-      - name: Check Gradle
-        working-directory: ${{ env.GRADLE_DIR }}
+      - name: Apply Android Kotlin compatibility patch
         shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew --version
+          find "$PROJECT_ROOT" -path '*/node_modules' -prune -o -type f \
+            \( -name '*.kt' -o -name '*.kts' -o -name '*.java' \) -print0 |
+            xargs -0 -r sed -i 's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g'
+
+      - name: Check Gradle configuration
+        working-directory: ${{ env.GRADLE_DIR }}
+        shell: bash
+        run: |
+          set -o pipefail
+
+          ./gradlew --version 2>&1 | tee "$GITHUB_WORKSPACE/gradle-version.log"
 
           ./gradlew help \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --info \
+            2>&1 | tee "$GITHUB_WORKSPACE/gradle-config.log"
 
       - name: Build Release APK
         working-directory: ${{ env.GRADLE_DIR }}
@@ -261,36 +269,33 @@ jobs:
           ./gradlew clean :app:assembleRelease \
             --no-daemon \
             --stacktrace \
+            --info \
             --warning-mode all \
             2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
 
-      - name: Find APK
+      - name: Collect and verify APK
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$(find "$GRADLE_DIR/app/build/outputs/apk" \
-            -type f -name '*.apk' \
-            -print 2>/dev/null | sort | tail -n 1 || true)"
+          APK="$(find "$GRADLE_DIR/app/build/outputs/apk" -type f -name '*.apk' -print 2>/dev/null | sort | tail -n 1 || true)"
 
           if [ -z "$APK" ]; then
-            echo "::error::APK was not generated."
-
-            find "$GRADLE_DIR/app/build/outputs" \
-              -type f -print 2>/dev/null || true
-
+            echo "::error::Gradle completed but no APK was found."
+            find "$GRADLE_DIR/app/build/outputs" -type f -print 2>/dev/null || true
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
-          ls -lh \
-            "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
+          test -s "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
-      - name: Upload APK
+          ls -lh "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
+
+      - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -299,13 +304,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build logs
+      - name: Upload diagnostics and build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.24-Build-Logs
+          name: Abir-AI-5.4.24-Build-Diagnostics
           path: |
+            expo-config.json
+            gradle-version.log
+            gradle-config.log
             abir-build.log
             ${{ env.GRADLE_DIR }}/app/build/outputs/logs/**
           if-no-files-found: warn
           retention-days: 7
+          
