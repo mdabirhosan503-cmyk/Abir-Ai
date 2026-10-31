@@ -9,9 +9,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: abir-ai-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build Abir AI 5.4.24 Release APK
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      ABIR_VERSION: "5.4.24"
+      ZIP_NAME: "AbirAI-5.4.24-600-MASTER-FEATURES-LIVE-VISION.zip"
+      UNPACK_DIR: "${{ github.workspace }}/abir_extracted"
 
     steps:
       - name: Checkout repository
@@ -23,7 +34,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Node.js
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -31,129 +42,254 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.12.4
+          version: "10.12.4"
 
-      - name: Find and extract Abir AI ZIP
+      - name: Locate and extract project ZIP
         shell: bash
         run: |
-          set -e
-          ZIP_FILE="AbirAI-5.4.24-600-MASTER-FEATURES-LIVE-VISION.zip"
+          set -Eeuo pipefail
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ZIP file not found: $ZIP_FILE"
-            find . -maxdepth 3 -name "*.zip"
+          ZIP_PATH="$(find "$GITHUB_WORKSPACE" -type f -name "$ZIP_NAME" -not -path '*/abir_extracted/*' -print -quit)"
+
+          if [[ -z "$ZIP_PATH" ]]; then
+            echo "ERROR: Cannot find $ZIP_NAME"
+            echo "ZIP files found:"
+            find "$GITHUB_WORKSPACE" -type f -iname '*.zip' -print || true
             exit 1
           fi
 
-          mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
+          echo "ZIP found: $ZIP_PATH"
 
-          PROJECT_DIR=""
-          while IFS= read -r file; do
-            dir="$(dirname "$file")"
-            if [ -f "$dir/package.json" ] &&
-               [ -f "$dir/android/gradlew" ] &&
-               [ -f "$dir/android/settings.gradle" -o -f "$dir/android/settings.gradle.kts" ]; then
-              PROJECT_DIR="$dir"
+          rm -rf "$UNPACK_DIR"
+          mkdir -p "$UNPACK_DIR"
+          unzip -oq "$ZIP_PATH" -d "$UNPACK_DIR"
+
+          echo "ZIP extracted successfully."
+          find "$UNPACK_DIR" -mindepth 1 -maxdepth 2 -print | sort | head -100
+
+      - name: Detect Android project folder
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          PROJECT_ROOT=""
+
+          while IFS= read -r -d '' GRADLEW; do
+            ANDROID_DIR="$(dirname "$GRADLEW")"
+            CANDIDATE="$(dirname "$ANDROID_DIR")"
+
+            if [[ -f "$CANDIDATE/package.json" &&
+                  ( -f "$ANDROID_DIR/settings.gradle" || -f "$ANDROID_DIR/settings.gradle.kts" ) &&
+                  -f "$ANDROID_DIR/app/build.gradle" ]]; then
+              PROJECT_ROOT="$CANDIDATE"
               break
             fi
-          done < <(find extracted -name gradlew -type f)
+          done < <(find "$UNPACK_DIR" -type f -path '*/android/gradlew' -print0)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Android project not found in ZIP"
-            find extracted -maxdepth 4 -type f | head -200
+          if [[ -z "$PROJECT_ROOT" ]]; then
+            echo "ERROR: Android project folder was not detected."
+
+            echo "Found package.json:"
+            find "$UNPACK_DIR" -type f -name package.json -print || true
+
+            echo "Found Gradle wrappers:"
+            find "$UNPACK_DIR" -type f -name gradlew -print || true
+
             exit 1
           fi
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found project: $PROJECT_DIR"
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
-      - name: Validate project version
+          echo "Android project found: $PROJECT_ROOT"
+
+          test -f "$PROJECT_ROOT/package.json"
+          test -f "$PROJECT_ROOT/android/gradlew"
+
+      - name: Verify project version and files
         shell: bash
         run: |
-          set -e
-          node -e '
-            const p = require("./" + process.env.PROJECT_DIR + "/package.json");
-            console.log("Package version:", p.version);
-            if (p.version !== "5.4.24") {
-              throw new Error("Expected package version 5.4.24");
-            }
-          '
+          set -Eeuo pipefail
 
-          grep -n 'versionName' "$PROJECT_DIR/android/app/build.gradle" || true
-          grep -q '5.4.24' "$PROJECT_DIR/android/app/build.gradle"
+          cd "$PROJECT_ROOT"
 
-      - name: Install dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: pnpm install --no-frozen-lockfile
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
 
-      - name: Verify required packages
-        working-directory: ${{ env.PROJECT_DIR }}
+          echo "Package version: $PACKAGE_VERSION"
+
+          if [[ "$PACKAGE_VERSION" != "$ABIR_VERSION" ]]; then
+            echo "ERROR: Expected version $ABIR_VERSION"
+            exit 1
+          fi
+
+          if ! grep -Eq "versionName[[:space:]]+['\"]${ABIR_VERSION}['\"]" android/app/build.gradle; then
+            echo "ERROR: Android versionName mismatch"
+            grep -n 'versionName' android/app/build.gradle || true
+            exit 1
+          fi
+
+          test -f modules/abir-app-launcher/package.json
+          test -f modules/abir-app-launcher/expo-module.config.json
+
+          echo "Project verification passed."
+
+      - name: Install JavaScript dependencies
+        shell: bash
         run: |
+          set -Eeuo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          pnpm install --no-frozen-lockfile
+
+      - name: Verify Expo and camera packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          echo "Node: $(node --version)"
+          echo "pnpm: $(pnpm --version)"
+
           node -e "
-            const p = require('./package.json');
-            for (const name of ['expo', 'react-native', 'expo-camera']) {
-              console.log(name + ':', p.dependencies?.[name] || p.devDependencies?.[name] || 'NOT FOUND');
-            }
+          for (const p of ['expo','react-native','expo-camera']) {
+            console.log(p + ': ' + require(p + '/package.json').version);
+          }
           "
+
+          node -e "console.log('Expo CLI:', require.resolve('@expo/cli/package.json'))"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Configure Android project
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
-          if [ -f android/app/src/main/java/com/abir/launcher/MainActivity.java ]; then
-            sed -i 's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
-              android/app/src/main/java/com/abir/launcher/MainActivity.java
-          fi
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-          printf "sdk.dir=%s\n" "$ANDROID_HOME" > android/local.properties
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Prepare Android project
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          while IFS= read -r -d '' FILE; do
+            sed -i 's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' "$FILE"
+          done < <(
+            grep -RIlZ --exclude-dir=node_modules \
+            'ResolveInfoFlags.of(0)' modules android 2>/dev/null || true
+          )
+
+          mkdir -p android
+
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
 
           chmod +x android/gradlew
 
-      - name: Build Release APK
-        working-directory: ${{ env.PROJECT_DIR }}/android
-        env:
-          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false"
-        run: |
-          ./gradlew --version
-          ./gradlew clean
-          ./gradlew :app:assembleRelease --stacktrace
+          echo "Android SDK: $ANDROID_HOME"
 
-      - name: Collect APK
+          grep '^distributionUrl=' \
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Configure Gradle memory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$HOME/.gradle"
+
+          cat > "$HOME/.gradle/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          org.gradle.caching=true
+          kotlin.daemon.jvm.options=-Xmx2g
+          EOF
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Check Gradle configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$PROJECT_ROOT/android"
+
+          ./gradlew --version
+
+          ./gradlew tasks \
+            --no-daemon \
+            --stacktrace
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$PROJECT_ROOT/android"
+
+          ./gradlew clean :app:assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            --warning-mode all \
+            2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
+
+      - name: Collect and verify APK
         if: success()
         shell: bash
         run: |
-          set -e
-          mkdir -p release
-          find "$PROJECT_DIR/android/app/build/outputs/apk/release" \
-            -name "*.apk" -type f -exec cp {} release/Abir-AI-5.4.24-release.apk \;
+          set -Eeuo pipefail
 
-          test -f release/Abir-AI-5.4.24-release.apk
-          ls -lh release/
+          APK_PATH="$(
+            find "$PROJECT_ROOT/android/app/build/outputs/apk/release" \
+            -type f -name '*.apk' -print -quit
+          )"
 
-      - name: Upload Release APK
+          if [[ -z "$APK_PATH" ]]; then
+            echo "ERROR: Release APK not found."
+
+            find "$PROJECT_ROOT/android/app/build/outputs" \
+              -type f -print || true
+
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/release"
+
+          cp "$APK_PATH" \
+            "$GITHUB_WORKSPACE/release/Abir-AI-${ABIR_VERSION}-release.apk"
+
+          test -s "$GITHUB_WORKSPACE/release/Abir-AI-${ABIR_VERSION}-release.apk"
+
+          echo "APK created successfully:"
+          ls -lh "$GITHUB_WORKSPACE/release/"
+
+      - name: Upload release APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Abir-AI-5.4.24-Live-Vision-Release-APK
           path: release/Abir-AI-5.4.24-release.apk
           if-no-files-found: error
+          retention-days: 14
 
-      - name: Upload build diagnostics
+      - name: Upload build logs if build fails
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-Build-Diagnostics
+          name: Abir-AI-5.4.24-Build-Error-Logs
           path: |
-            ${{ env.PROJECT_DIR }}/android/build/reports/
-            ${{ env.PROJECT_DIR }}/android/app/build/reports/
-          if-no-files-found: ignore
+            abir-build.log
+            abir_extracted/**/android/build/reports/**
+            abir_extracted/**/android/app/build/outputs/logs/**
+          if-no-files-found: warn
+          retention-days: 7
