@@ -11,323 +11,149 @@ permissions:
 
 jobs:
   build:
-    name: Build Abir AI 5.4.21 Release APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    env:
-      ZIP_NAME: AbirAI-5.4.21-RESEARCH-RESULTS-SCREEN.zip
-      PROJECT_DIR: extracted
-      ABIR_VERSION: 5.4.21
 
     steps:
-      # 1. CHECKOUT
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. JAVA 17
-      - name: Setup Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. NODE 20
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # 4. PNPM
-      - name: Setup pnpm
+      - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: "10.12.4"
+          version: 10.12.4
 
-      # 5. FIND AND EXTRACT ZIP
-      - name: Find Abir AI ZIP
+      - name: Find and extract Abir AI ZIP
         shell: bash
         run: |
-          set -eux
+          set -e
+          ZIP_FILE="AbirAI-5.4.24-600-MASTER-FEATURES-LIVE-VISION.zip"
 
-          ZIP_PATH="$(find . -type f \
-            -name "${ZIP_NAME}" -print -quit || true)"
-
-          if [ -z "$ZIP_PATH" ]; then
-            echo "ERROR: ${ZIP_NAME} not found."
-            find . -type f -iname "*.zip" -print | sort
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ZIP file not found: $ZIP_FILE"
+            find . -maxdepth 3 -name "*.zip"
             exit 1
           fi
 
-          echo "Using ZIP: $ZIP_PATH"
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
 
-          rm -rf "${PROJECT_DIR}"
-          mkdir -p "${PROJECT_DIR}"
-          unzip -q "$ZIP_PATH" -d "${PROJECT_DIR}"
-
-      # 6. DETECT PROJECT ROOT
-      - name: Detect project root
-        shell: bash
-        run: |
-          set -eux
-
-          PROJECT_ROOT=""
-
-          while IFS= read -r -d '' PACKAGE_FILE; do
-            CANDIDATE="$(dirname "$PACKAGE_FILE")"
-
-            if [ -f "$CANDIDATE/android/gradlew" ]; then
-              PROJECT_ROOT="$CANDIDATE"
+          PROJECT_DIR=""
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            if [ -f "$dir/package.json" ] &&
+               [ -f "$dir/android/gradlew" ] &&
+               [ -f "$dir/android/settings.gradle" -o -f "$dir/android/settings.gradle.kts" ]; then
+              PROJECT_DIR="$dir"
               break
             fi
-          done < <(
-            find "${PROJECT_DIR}" \
-              -type f -name "package.json" -print0
-          )
+          done < <(find extracted -name gradlew -type f)
 
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "ERROR: Android project root not found."
-            find "${PROJECT_DIR}" -maxdepth 6 -type f | sort | head -500
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Android project not found in ZIP"
+            find extracted -maxdepth 4 -type f | head -200
             exit 1
           fi
 
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
-          echo "Project root: $PROJECT_ROOT"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Found project: $PROJECT_DIR"
 
-      # 7. VERIFY PROJECT
-      - name: Verify project
-        working-directory: ${{ env.PROJECT_ROOT }}
+      - name: Validate project version
         shell: bash
         run: |
-          set -eux
+          set -e
+          node -e '
+            const p = require("./" + process.env.PROJECT_DIR + "/package.json");
+            console.log("Package version:", p.version);
+            if (p.version !== "5.4.24") {
+              throw new Error("Expected package version 5.4.24");
+            }
+          '
 
-          test -f package.json
-          test -f android/gradlew
-          test -f android/settings.gradle
+          grep -n 'versionName' "$PROJECT_DIR/android/app/build.gradle" || true
+          grep -q '5.4.24' "$PROJECT_DIR/android/app/build.gradle"
 
-          echo "Project structure verified."
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: pnpm install --no-frozen-lockfile
 
-      # 8. INSTALL DEPENDENCIES
-      - name: Install JavaScript dependencies
-        working-directory: ${{ env.PROJECT_ROOT }}
+      - name: Verify required packages
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          node -e "
+            const p = require('./package.json');
+            for (const name of ['expo', 'react-native', 'expo-camera']) {
+              console.log(name + ':', p.dependencies?.[name] || p.devDependencies?.[name] || 'NOT FOUND');
+            }
+          "
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Configure Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -eux
-          pnpm install --no-frozen-lockfile
+          set -e
 
-      # 9. VERIFY PACKAGES
-      - name: Verify Expo and React Native
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          set -eux
-
-          node --version
-          pnpm --version
-          pnpm exec expo --version
-
-          node -p "require('expo/package.json').version"
-          node -p "require('react-native/package.json').version"
-
-      # 10. OPTIONAL AUTOLINKING CHECK
-      - name: Locate Expo Autolinking
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          set -u
-
-          FOUND="$(node -p \
-            "require.resolve('expo-modules-autolinking/package.json')" \
-            2>/dev/null || true)"
-
-          if [ -n "$FOUND" ]; then
-            echo "Expo Autolinking: $FOUND"
-          else
-            echo "Autolinking package not directly resolvable."
-            echo "Expo Gradle will handle its own resolution."
+          if [ -f android/app/src/main/java/com/abir/launcher/MainActivity.java ]; then
+            sed -i 's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
+              android/app/src/main/java/com/abir/launcher/MainActivity.java
           fi
 
-      # 11. VERIFY CUSTOM MODULE
-      - name: Verify Abir App Launcher
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          set -eux
+          printf "sdk.dir=%s\n" "$ANDROID_HOME" > android/local.properties
 
-          if [ -d modules/abir-app-launcher ]; then
-            test -f modules/abir-app-launcher/package.json
-            test -f modules/abir-app-launcher/expo-module.config.json
-            cat modules/abir-app-launcher/expo-module.config.json
-          else
-            echo "WARNING: Custom launcher module not found."
-          fi
+          chmod +x android/gradlew
 
-      # 12. ANDROID SDK
-      - name: Prepare Android SDK
-        shell: bash
-        run: |
-          set -eux
-
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-
-          if [ -z "$SDK" ]; then
-            echo "ERROR: Android SDK not found."
-            exit 1
-          fi
-
-          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK/cmdline-tools" \
-              -type f -name sdkmanager -print -quit 2>/dev/null || true)"
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "platforms;android-36" \
-            "build-tools;35.0.0" \
-            "build-tools;36.0.0"
-
-          echo "Android SDK ready."
-
-      # 13. FIX ResolveInfoFlags
-      - name: Fix Android ResolveInfoFlags
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          set -eux
-
-          grep -RIl "ResolveInfoFlags.of(0)" \
-            modules android 2>/dev/null |
-          while read -r FILE; do
-            sed -i \
-              's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
-              "$FILE"
-          done || true
-
-      # 14. VALIDATE PNG
-      - name: Validate PNG assets
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          set -eux
-
-          BAD=0
-
-          while IFS= read -r -d '' FILE; do
-            MAGIC="$(xxd -p -l 8 "$FILE" 2>/dev/null || true)"
-
-            if [ "$MAGIC" != "89504e470d0a1a0a" ]; then
-              echo "Invalid PNG: $FILE"
-              echo "Signature: $MAGIC"
-              BAD=1
-            fi
-          done < <(find . -type f -iname "*.png" -print0)
-
-          if [ "$BAD" -ne 0 ]; then
-            exit 1
-          fi
-
-          echo "PNG validation passed."
-
-      # 15. GRADLE MEMORY
-      - name: Configure Gradle
-        shell: bash
-        run: |
-          set -eux
-
-          mkdir -p ~/.gradle
-
-          cat > ~/.gradle/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          org.gradle.daemon=false
-          org.gradle.parallel=false
-          org.gradle.caching=true
-          kotlin.daemon.jvm.options=-Xmx2g
-          EOF
-
-      # 16. PREPARE GRADLE
-      - name: Prepare Gradle
-        working-directory: ${{ env.PROJECT_ROOT }}/android
-        shell: bash
-        run: |
-          set -eux
-          chmod +x gradlew
-          ./gradlew --version
-
-      # 17. CLEAN
-      - name: Clean Android project
-        working-directory: ${{ env.PROJECT_ROOT }}/android
-        shell: bash
-        run: |
-          set -eux
-          ./gradlew clean --no-daemon --stacktrace
-
-      # 18. BUILD RELEASE APK
       - name: Build Release APK
-        working-directory: ${{ env.PROJECT_ROOT }}/android
-        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        env:
+          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false"
         run: |
-          set -o pipefail
+          ./gradlew --version
+          ./gradlew clean
+          ./gradlew :app:assembleRelease --stacktrace
 
-          chmod +x gradlew
-
-          ./gradlew :app:assembleRelease \
-            --no-daemon \
-            --stacktrace \
-            --info \
-            --warning-mode all \
-            2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
-
-      # 19. COLLECT APK
       - name: Collect APK
         if: success()
-        working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
-          set -eux
+          set -e
+          mkdir -p release
+          find "$PROJECT_DIR/android/app/build/outputs/apk/release" \
+            -name "*.apk" -type f -exec cp {} release/Abir-AI-5.4.24-release.apk \;
 
-          APK="$(find android/app/build/outputs/apk/release \
-            -type f -name "*.apk" -print -quit)"
+          test -f release/Abir-AI-5.4.24-release.apk
+          ls -lh release/
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: Release APK not found."
-            find android/app/build/outputs -type f -print || true
-            exit 1
-          fi
-
-          mkdir -p "$GITHUB_WORKSPACE/release"
-
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Abir-AI-${ABIR_VERSION}-release.apk"
-
-          ls -lh "$GITHUB_WORKSPACE/release/"
-
-      # 20. UPLOAD APK
       - name: Upload Release APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.21-Release-APK
-          path: release/Abir-AI-5.4.21-release.apk
+          name: Abir-AI-5.4.24-Live-Vision-Release-APK
+          path: release/Abir-AI-5.4.24-release.apk
           if-no-files-found: error
 
-      # 21. UPLOAD BUILD LOG ON FAILURE
-      - name: Upload diagnostics
+      - name: Upload build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.21-Build-Diagnostics
+          name: Abir-AI-Build-Diagnostics
           path: |
-            abir-build.log
-            extracted/**/android/build/reports/**
-            extracted/**/android/app/build/outputs/logs/**
-          if-no-files-found: warn
+            ${{ env.PROJECT_DIR }}/android/build/reports/
+            ${{ env.PROJECT_DIR }}/android/app/build/reports/
+          if-no-files-found: ignore
