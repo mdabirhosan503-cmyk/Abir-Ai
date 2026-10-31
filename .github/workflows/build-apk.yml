@@ -47,7 +47,23 @@ jobs:
 
 
       # ============================================================
-      # 3. NODE 20
+      # 3. PNPM
+      #
+      # IMPORTANT:
+      # pnpm MUST be installed before setup-node uses cache: pnpm
+      # ============================================================
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.12.4"
+          run_install: false
+
+
+      # ============================================================
+      # 4. NODE 20
+      #
+      # pnpm is already available here, so cache: pnpm is safe.
       # ============================================================
 
       - name: Set up Node.js
@@ -60,18 +76,40 @@ jobs:
 
 
       # ============================================================
-      # 4. PNPM
+      # 5. VERIFY NODE + PNPM
       # ============================================================
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: "10.12.4"
-          run_install: false
+      - name: Verify Node and pnpm
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "=========================================="
+          echo "NODE / PNPM CHECK"
+          echo "=========================================="
+
+          echo ""
+          echo "Node:"
+          node --version
+
+          echo ""
+          echo "npm:"
+          npm --version
+
+          echo ""
+          echo "pnpm:"
+          pnpm --version
+
+          echo ""
+          echo "pnpm path:"
+          command -v pnpm
+
+          echo ""
+          echo "=========================================="
 
 
       # ============================================================
-      # 5. SYSTEM INFORMATION
+      # 6. SYSTEM INFORMATION
       # ============================================================
 
       - name: Show build environment
@@ -79,21 +117,8 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "=========================================="
-          echo "ABIR AI BUILD ENVIRONMENT"
-          echo "=========================================="
-
-          echo ""
           echo "Runner:"
           uname -a
-
-          echo ""
-          echo "Node:"
-          node --version
-
-          echo ""
-          echo "pnpm:"
-          pnpm --version
 
           echo ""
           echo "Java:"
@@ -103,12 +128,9 @@ jobs:
           echo "Android SDK:"
           echo "$ANDROID_SDK_ROOT"
 
-          echo ""
-          echo "=========================================="
-
 
       # ============================================================
-      # 6. LOCATE SDKMANAGER
+      # 7. LOCATE ANDROID SDK MANAGER
       # ============================================================
 
       - name: Locate Android SDK manager
@@ -134,8 +156,6 @@ jobs:
           if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
             echo "ERROR: sdkmanager was not found."
 
-            echo ""
-            echo "Available cmdline-tools:"
             find "$ANDROID_SDK_ROOT/cmdline-tools" \
               -maxdepth 6 \
               -type f \
@@ -147,17 +167,14 @@ jobs:
 
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
-          echo ""
           echo "Using sdkmanager:"
           echo "$SDKMANAGER"
 
-          echo ""
-          echo "sdkmanager version:"
           "$SDKMANAGER" --version
 
 
       # ============================================================
-      # 7. ACCEPT SDK LICENSES
+      # 8. ACCEPT ANDROID LICENSES
       # ============================================================
 
       - name: Accept Android SDK licenses
@@ -167,22 +184,19 @@ jobs:
 
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
 
-          echo "Android SDK licenses accepted/processed."
+          echo "Android SDK licenses processed."
 
 
       # ============================================================
-      # 8. INSTALL ONLY REQUIRED SDK PACKAGES
+      # 9. INSTALL ANDROID SDK
       #
-      # IMPORTANT:
-      # NEVER install the obsolete package "tools".
+      # NEVER install the obsolete "tools" package.
       # ============================================================
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          echo "Installing required Android SDK packages..."
 
           "$SDKMANAGER" \
             "platform-tools" \
@@ -196,25 +210,15 @@ jobs:
           echo "ADB:"
           "$ANDROID_SDK_ROOT/platform-tools/adb" version
 
-          echo ""
-          echo "Checking Android 36:"
           test -d "$ANDROID_SDK_ROOT/platforms/android-36"
-          echo "android-36 OK"
+          test -d "$ANDROID_SDK_ROOT/build-tools/36.0.0"
 
           echo ""
-          echo "Checking Build Tools 36:"
-          test -d "$ANDROID_SDK_ROOT/build-tools/36.0.0"
-          echo "build-tools 36.0.0 OK"
+          echo "Android SDK verification PASSED."
 
 
       # ============================================================
-      # 9. FIND ABIR AI ZIP
-      #
-      # This accepts:
-      # - exact original ZIP
-      # - FIXED ZIP
-      # - COMPLETE ZIP
-      # - any AbirAI 5.4.24 ZIP
+      # 10. FIND ABIR AI ZIP
       # ============================================================
 
       - name: Find Abir AI ZIP
@@ -222,11 +226,8 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo "Searching for Abir AI 5.4.24 ZIP..."
-
           BEST_ZIP=""
 
-          # Prefer COMPLETE/FIXED archive first.
           for PATTERN in \
             "AbirAI-5.4.24-600-MASTER-FEATURES-LIVE-VISION-FIXED-COMPLETE.zip" \
             "AbirAI-5.4.24-600-MASTER-FEATURES-LIVE-VISION-FIXED.zip" \
@@ -250,12 +251,11 @@ jobs:
           done
 
           if [[ -z "$BEST_ZIP" ]]; then
-
-            echo ""
             echo "ERROR: Abir AI 5.4.24 ZIP was not found."
 
             echo ""
-            echo "ZIP files currently available:"
+            echo "Available ZIP files:"
+
             find "$GITHUB_WORKSPACE" \
               -type f \
               -name "*.zip" \
@@ -273,7 +273,7 @@ jobs:
 
 
       # ============================================================
-      # 10. VERIFY ZIP
+      # 11. VERIFY ZIP
       # ============================================================
 
       - name: Verify Abir AI ZIP
@@ -285,16 +285,13 @@ jobs:
 
           unzip -tq "$ABIR_ZIP"
 
-          echo ""
-          echo "ZIP integrity check PASSED."
+          echo "ZIP integrity PASSED."
 
-          echo ""
-          echo "ZIP size:"
           ls -lh "$ABIR_ZIP"
 
 
       # ============================================================
-      # 11. EXTRACT ZIP
+      # 12. EXTRACT ABIR AI
       # ============================================================
 
       - name: Extract Abir AI project
@@ -303,23 +300,15 @@ jobs:
           set -Eeuo pipefail
 
           rm -rf "$UNPACK_DIR"
-
           mkdir -p "$UNPACK_DIR"
 
           unzip -oq "$ABIR_ZIP" -d "$UNPACK_DIR"
 
-          echo "Abir AI extraction completed."
-
-          echo ""
-          echo "Top-level extracted files:"
-          find "$UNPACK_DIR" \
-            -maxdepth 2 \
-            -type f \
-            -print | head -n 100 || true
+          echo "Extraction completed."
 
 
       # ============================================================
-      # 12. DETECT CORRECT PROJECT
+      # 13. DETECT ANDROID PROJECT
       # ============================================================
 
       - name: Detect Android project
@@ -335,59 +324,47 @@ jobs:
             ANDROID_DIR="$(dirname "$GRADLEW")"
             CANDIDATE="$(dirname "$ANDROID_DIR")"
 
-            echo ""
-            echo "------------------------------------------"
-            echo "Checking candidate:"
-            echo "$CANDIDATE"
-            echo "------------------------------------------"
-
             if [[ ! -f "$CANDIDATE/package.json" ]]; then
-              echo "Missing package.json"
               continue
             fi
 
             if [[ ! -f "$ANDROID_DIR/app/build.gradle" &&
                   ! -f "$ANDROID_DIR/app/build.gradle.kts" ]]; then
-              echo "Missing app Gradle file"
               continue
             fi
 
             if [[ ! -f "$ANDROID_DIR/settings.gradle" &&
                   ! -f "$ANDROID_DIR/settings.gradle.kts" ]]; then
-              echo "Missing settings Gradle file"
               continue
             fi
 
             SCORE=0
 
-            if [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.jar" ]]; then
+            [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.jar" ]] &&
               SCORE=$((SCORE + 3))
-            fi
 
-            if [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]]; then
+            [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]] &&
               SCORE=$((SCORE + 3))
-            fi
 
-            if [[ -f "$CANDIDATE/modules/abir-app-launcher/android/build.gradle" ]]; then
+            [[ -f "$CANDIDATE/modules/abir-app-launcher/android/build.gradle" ]] &&
               SCORE=$((SCORE + 4))
-            fi
 
-            if [[ -f "$CANDIDATE/modules/abir-app-launcher/expo-module.config.json" ]]; then
+            [[ -f "$CANDIDATE/modules/abir-app-launcher/expo-module.config.json" ]] &&
               SCORE=$((SCORE + 2))
-            fi
 
             VERSION="$(
               node -p "require('$CANDIDATE/package.json').version" \
               2>/dev/null || echo ""
             )"
 
-            echo "Detected package version: $VERSION"
-
             if [[ "$VERSION" == "$ABIR_VERSION" ]]; then
               SCORE=$((SCORE + 10))
             fi
 
-            echo "Candidate score: $SCORE"
+            echo ""
+            echo "Candidate: $CANDIDATE"
+            echo "Version: $VERSION"
+            echo "Score: $SCORE"
 
             if (( SCORE > BEST_SCORE )); then
               BEST_SCORE=$SCORE
@@ -402,12 +379,8 @@ jobs:
           )
 
           if [[ -z "$BEST_DIR" ]]; then
+            echo "ERROR: Android project not found."
 
-            echo ""
-            echo "ERROR: No valid Android project found."
-
-            echo ""
-            echo "Possible project files:"
             find "$UNPACK_DIR" \
               -maxdepth 8 \
               \( \
@@ -422,18 +395,14 @@ jobs:
           fi
 
           echo ""
-          echo "=========================================="
-          echo "SELECTED ABIR AI PROJECT"
-          echo "=========================================="
+          echo "Selected project:"
           echo "$BEST_DIR"
-          echo "Score: $BEST_SCORE"
-          echo "=========================================="
 
           echo "PROJECT_ROOT=$BEST_DIR" >> "$GITHUB_ENV"
 
 
       # ============================================================
-      # 13. VERIFY PROJECT
+      # 14. VERIFY PROJECT
       # ============================================================
 
       - name: Verify Abir AI project
@@ -443,19 +412,12 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          echo "Project root:"
-          pwd
-
-          echo ""
-          echo "Package version:"
-
           VERSION="$(node -p "require('./package.json').version")"
 
-          echo "$VERSION"
+          echo "Abir AI version: $VERSION"
 
           if [[ "$VERSION" != "$ABIR_VERSION" ]]; then
-            echo "ERROR: Expected Abir AI version $ABIR_VERSION"
-            echo "Found: $VERSION"
+            echo "ERROR: Expected version $ABIR_VERSION"
             exit 1
           fi
 
@@ -463,13 +425,13 @@ jobs:
 
           if [[ ! -f android/app/build.gradle &&
                 ! -f android/app/build.gradle.kts ]]; then
-            echo "ERROR: app Gradle file missing."
+            echo "ERROR: Android app Gradle file missing."
             exit 1
           fi
 
           if [[ ! -f android/settings.gradle &&
                 ! -f android/settings.gradle.kts ]]; then
-            echo "ERROR: settings Gradle file missing."
+            echo "ERROR: Android settings Gradle file missing."
             exit 1
           fi
 
@@ -479,25 +441,22 @@ jobs:
             APP_GRADLE="android/app/build.gradle.kts"
           fi
 
-          echo ""
-          echo "Checking Android versionName..."
-
           if ! grep -Eq \
             "versionName[[:space:]]*[=]?[[:space:]]*['\"]${ABIR_VERSION}['\"]" \
             "$APP_GRADLE"; then
 
-            echo "ERROR: Android versionName does not match $ABIR_VERSION."
+            echo "ERROR: Android versionName mismatch."
 
             grep -n "versionName" "$APP_GRADLE" || true
 
             exit 1
           fi
 
-          echo "versionName OK."
+          echo "Project verification PASSED."
 
 
       # ============================================================
-      # 14. CHECK FOR FORBIDDEN WORKSPACE DEPENDENCY
+      # 15. CHECK BROKEN WORKSPACE DEPENDENCY
       # ============================================================
 
       - name: Check workspace dependencies
@@ -516,17 +475,16 @@ jobs:
             2>/dev/null; then
 
             echo "ERROR:"
-            echo "Forbidden workspace dependency detected:"
-            echo "@workspace/api-client-react"
+            echo "@workspace/api-client-react detected."
 
             exit 1
           fi
 
-          echo "Workspace dependency check passed."
+          echo "Workspace dependency check PASSED."
 
 
       # ============================================================
-      # 15. INSTALL DEPENDENCIES
+      # 16. INSTALL DEPENDENCIES
       # ============================================================
 
       - name: Install project dependencies
@@ -536,13 +494,15 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
+          echo "Installing dependencies..."
+
           pnpm install --no-frozen-lockfile
 
-          echo "JavaScript dependencies installed."
+          echo "Dependencies installed successfully."
 
 
       # ============================================================
-      # 16. VERIFY PACKAGE VERSIONS
+      # 17. VERIFY EXPO / REACT NATIVE
       # ============================================================
 
       - name: Verify Expo React Native and Camera
@@ -573,15 +533,11 @@ jobs:
           node <<'NODE'
           const p = require('./package.json');
 
-          const names = [
+          for (const name of [
             'expo',
             'react-native',
-            'expo-camera',
-            'expo-speech',
-            'expo-location'
-          ];
-
-          for (const name of names) {
+            'expo-camera'
+          ]) {
             const version =
               p.dependencies?.[name] ||
               p.devDependencies?.[name] ||
@@ -597,13 +553,13 @@ jobs:
           if pnpm exec expo --version; then
             echo "Expo CLI available."
           else
-            echo "WARNING: Expo CLI check failed."
-            echo "Native Gradle build will continue."
+            echo "WARNING: Expo CLI check unavailable."
+            echo "Continuing with native Android build."
           fi
 
 
       # ============================================================
-      # 17. PREPARE ANDROID
+      # 18. PREPARE ANDROID
       # ============================================================
 
       - name: Prepare Android project
@@ -618,10 +574,7 @@ jobs:
 
           chmod +x android/gradlew
 
-          echo "Android local.properties:"
-          cat android/local.properties
-
-          echo ""
+          echo "Android SDK configured."
 
           if [[ ! -f android/gradle/wrapper/gradle-wrapper.jar ]]; then
             echo "ERROR: Gradle wrapper JAR missing."
@@ -633,15 +586,16 @@ jobs:
             exit 1
           fi
 
-          echo "Gradle wrapper:"
+          echo ""
+          echo "Gradle wrapper properties:"
           cat android/gradle/wrapper/gradle-wrapper.properties
 
 
       # ============================================================
-      # 18. SAFE KOTLIN COMPATIBILITY FIX
+      # 19. KOTLIN COMPATIBILITY FIX
       # ============================================================
 
-      - name: Apply Android Kotlin compatibility fix
+      - name: Apply Kotlin compatibility fix
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -672,14 +626,14 @@ jobs:
           )
 
           if [[ "$FOUND" -eq 1 ]]; then
-            echo "Kotlin compatibility patch applied."
+            echo "Compatibility patch applied."
           else
-            echo "No ResolveInfoFlags compatibility patch required."
+            echo "No compatibility patch required."
           fi
 
 
       # ============================================================
-      # 19. CONFIGURE GRADLE
+      # 20. GRADLE CONFIGURATION
       # ============================================================
 
       - name: Configure Gradle
@@ -697,12 +651,11 @@ jobs:
           kotlin.daemon.jvm.options=-Xmx2g
           EOF
 
-          echo "Gradle configuration:"
-          cat "$HOME/.gradle/gradle.properties"
+          echo "Gradle configured."
 
 
       # ============================================================
-      # 20. GRADLE CACHE
+      # 21. GRADLE CACHE
       # ============================================================
 
       - name: Set up Gradle cache
@@ -710,7 +663,7 @@ jobs:
 
 
       # ============================================================
-      # 21. CHECK GRADLE
+      # 22. CHECK GRADLE
       # ============================================================
 
       - name: Check Gradle configuration
@@ -724,7 +677,7 @@ jobs:
 
 
       # ============================================================
-      # 22. GRADLE HELP TEST
+      # 23. TEST GRADLE CONFIGURATION
       # ============================================================
 
       - name: Test Gradle configuration
@@ -740,7 +693,7 @@ jobs:
 
 
       # ============================================================
-      # 23. BUILD RELEASE APK
+      # 24. BUILD RELEASE APK
       # ============================================================
 
       - name: Build Abir AI Release APK
@@ -756,4 +709,60 @@ jobs:
 
           ./gradlew clean :app:assembleRelease \
             --no-daemon \
-            --stack
+            --stacktrace \
+            --warning-mode all \
+            2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
+
+          echo ""
+          echo "Gradle build completed."
+
+
+      # ============================================================
+      # 25. FIND APK
+      # ============================================================
+
+      - name: Find generated APK
+        if: success()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          OUTPUT_DIR="$PROJECT_ROOT/android/app/build/outputs/apk"
+
+          if [[ ! -d "$OUTPUT_DIR" ]]; then
+            echo "ERROR: APK output directory missing."
+            exit 1
+          fi
+
+          echo "APK files found:"
+
+          find "$OUTPUT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print || true
+
+          APK_PATH="$(
+            find "$OUTPUT_DIR" \
+              -type f \
+              -name "*.apk" \
+              -path "*/release/*" \
+              -print \
+              -quit \
+              2>/dev/null || true
+          )"
+
+          if [[ -z "$APK_PATH" ]]; then
+            APK_PATH="$(
+              find "$OUTPUT_DIR" \
+                -type f \
+                -name "*.apk" \
+                -print \
+                -quit \
+                2>/dev/null || true
+            )"
+          fi
+
+          if [[ -z "$APK_PATH" ]]; then
+            echo "ERROR: No APK generated."
+
+            find "$OUTPUT_DIR" \
