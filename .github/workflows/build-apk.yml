@@ -23,20 +23,23 @@ jobs:
       ABIR_VERSION: "5.4.24"
       ZIP_NAME: "AbirAI-5.4.24-600-MASTER-FEATURES-LIVE-VISION.zip"
       UNPACK_DIR: "${{ github.workspace }}/abir_extracted"
+      ANDROID_SDK_ROOT: "/usr/local/lib/android/sdk"
+      ANDROID_HOME: "/usr/local/lib/android/sdk"
 
     steps:
-      # 1. Download repository
+
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java
+      # 2. Java 17
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Node.js
+      # 3. Node 20
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -47,34 +50,136 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: "10.12.4"
+          run_install: false
 
-      # 5. Find ZIP and extract
-      - name: Extract Abir AI ZIP
+      # 5. Locate Android SDK manager
+      - name: Locate Android SDK tools
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          ZIP_PATH="$(find "$GITHUB_WORKSPACE" \
-            -type f -name "$ZIP_NAME" \
-            -not -path '*/abir_extracted/*' \
-            -print -quit)"
+          SDKMANAGER=""
 
-          if [[ -z "$ZIP_PATH" ]]; then
-            echo "ERROR: Abir AI ZIP not found!"
-            find "$GITHUB_WORKSPACE" -type f -name "*.zip"
+          if [[ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]]; then
+            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER="$(
+              find "$ANDROID_SDK_ROOT/cmdline-tools" \
+                -type f \
+                -path '*/bin/sdkmanager' \
+                -print 2>/dev/null |
+              sort -V |
+              tail -n 1 || true
+            )"
+          fi
+
+          if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
+            echo "ERROR: sdkmanager not found."
+            find "$ANDROID_SDK_ROOT/cmdline-tools" \
+              -maxdepth 5 \
+              -type f \
+              -name sdkmanager \
+              -print 2>/dev/null || true
             exit 1
           fi
 
-          echo "ZIP: $ZIP_PATH"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
+          echo "Using:"
+          echo "$SDKMANAGER"
+
+          "$SDKMANAGER" --version
+
+      # 6. Accept Android licenses
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          echo "Android SDK licenses processed."
+
+      # 7. Install required Android SDK
+      # IMPORTANT:
+      # Do NOT install "tools".
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+          echo ""
+          echo "Android SDK installation completed."
+          echo ""
+
+          "$ANDROID_SDK_ROOT/platform-tools/adb" version
+
+          test -d "$ANDROID_SDK_ROOT/platforms/android-36"
+          test -d "$ANDROID_SDK_ROOT/build-tools/36.0.0"
+
+      # 8. Find ZIP
+      - name: Find and extract Abir AI ZIP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          ZIP_PATH="$(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -name "$ZIP_NAME" \
+              -not -path '*/abir_extracted/*' \
+              -print -quit
+          )"
+
+          if [[ -z "$ZIP_PATH" ]]; then
+
+            echo "Exact ZIP not found."
+            echo "Searching compatible AbirAI 5.4.24 ZIP..."
+
+            ZIP_PATH="$(
+              find "$GITHUB_WORKSPACE" \
+                -type f \
+                -name 'AbirAI-5.4.24-*.zip' \
+                -not -path '*/abir_extracted/*' \
+                -print -quit || true
+            )"
+
+          fi
+
+          if [[ -z "$ZIP_PATH" ]]; then
+            echo ""
+            echo "ERROR: Abir AI ZIP not found!"
+            echo ""
+            echo "Available ZIP files:"
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -name "*.zip" \
+              -print || true
+            exit 1
+          fi
+
+          echo "Found ZIP:"
+          echo "$ZIP_PATH"
+
+          echo ""
+          echo "Testing ZIP..."
+
+          unzip -tq "$ZIP_PATH"
 
           rm -rf "$UNPACK_DIR"
           mkdir -p "$UNPACK_DIR"
 
           unzip -oq "$ZIP_PATH" -d "$UNPACK_DIR"
 
+          echo ""
           echo "Extraction completed."
 
-      # 6. Detect the correct project directory
+      # 9. Detect project
       - name: Detect Android project
         shell: bash
         run: |
@@ -84,6 +189,7 @@ jobs:
           BEST_SCORE=-1
 
           while IFS= read -r -d '' GRADLEW; do
+
             ANDROID_DIR="$(dirname "$GRADLEW")"
             CANDIDATE="$(dirname "$ANDROID_DIR")"
 
@@ -91,7 +197,8 @@ jobs:
               continue
             fi
 
-            if [[ ! -f "$ANDROID_DIR/app/build.gradle" ]]; then
+            if [[ ! -f "$ANDROID_DIR/app/build.gradle" &&
+                  ! -f "$ANDROID_DIR/app/build.gradle.kts" ]]; then
               continue
             fi
 
@@ -102,16 +209,34 @@ jobs:
 
             SCORE=0
 
-            [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.jar" ]] && SCORE=$((SCORE+3))
-            [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]] && SCORE=$((SCORE+3))
-            [[ -f "$CANDIDATE/modules/abir-app-launcher/android/build.gradle" ]] && SCORE=$((SCORE+4))
-            [[ -f "$CANDIDATE/modules/abir-app-launcher/expo-module.config.json" ]] && SCORE=$((SCORE+2))
+            if [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.jar" ]]; then
+              SCORE=$((SCORE + 3))
+            fi
 
-            VERSION="$(node -p "require('$CANDIDATE/package.json').version" 2>/dev/null || echo "")"
+            if [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]]; then
+              SCORE=$((SCORE + 3))
+            fi
 
-            [[ "$VERSION" == "5.4.24" ]] && SCORE=$((SCORE+5))
+            if [[ -f "$CANDIDATE/modules/abir-app-launcher/android/build.gradle" ]]; then
+              SCORE=$((SCORE + 4))
+            fi
 
-            echo "Candidate: $CANDIDATE"
+            if [[ -f "$CANDIDATE/modules/abir-app-launcher/expo-module.config.json" ]]; then
+              SCORE=$((SCORE + 2))
+            fi
+
+            VERSION="$(
+              node -p "require('$CANDIDATE/package.json').version" \
+              2>/dev/null || echo ""
+            )"
+
+            if [[ "$VERSION" == "$ABIR_VERSION" ]]; then
+              SCORE=$((SCORE + 5))
+            fi
+
+            echo ""
+            echo "Candidate:"
+            echo "$CANDIDATE"
             echo "Score: $SCORE"
 
             if (( SCORE > BEST_SCORE )); then
@@ -119,23 +244,33 @@ jobs:
               BEST_DIR="$CANDIDATE"
             fi
 
-          done < <(find "$UNPACK_DIR" -type f \
-            -path '*/android/gradlew' -print0)
+          done < <(
+            find "$UNPACK_DIR" \
+              -type f \
+              -path '*/android/gradlew' \
+              -print0
+          )
 
           if [[ -z "$BEST_DIR" ]]; then
+
+            echo ""
             echo "ERROR: Android project not found!"
 
-            find "$UNPACK_DIR" -maxdepth 5 \
-              \( -name package.json -o -name gradlew \) -print
+            find "$UNPACK_DIR" \
+              -maxdepth 6 \
+              \( -name package.json -o -name gradlew \) \
+              -print || true
 
             exit 1
           fi
 
+          echo ""
+          echo "Selected project:"
+          echo "$BEST_DIR"
+
           echo "PROJECT_ROOT=$BEST_DIR" >> "$GITHUB_ENV"
 
-          echo "Selected project: $BEST_DIR"
-
-      # 7. Verify project
+      # 10. Verify project
       - name: Verify project files and version
         shell: bash
         run: |
@@ -145,7 +280,8 @@ jobs:
 
           VERSION="$(node -p "require('./package.json').version")"
 
-          echo "Abir AI version: $VERSION"
+          echo "Abir AI version:"
+          echo "$VERSION"
 
           if [[ "$VERSION" != "$ABIR_VERSION" ]]; then
             echo "ERROR: Wrong project version!"
@@ -153,18 +289,53 @@ jobs:
           fi
 
           test -f android/gradlew
-          test -f android/app/build.gradle
-          test -f android/settings.gradle
 
-          if ! grep -Eq "versionName[[:space:]]+['\"]${ABIR_VERSION}['\"]" android/app/build.gradle; then
-            echo "ERROR: Android versionName mismatch"
-            grep -n versionName android/app/build.gradle || true
+          if [[ ! -f android/app/build.gradle &&
+                ! -f android/app/build.gradle.kts ]]; then
+            echo "ERROR: Android app Gradle file missing."
             exit 1
           fi
 
+          if [[ ! -f android/settings.gradle &&
+                ! -f android/settings.gradle.kts ]]; then
+            echo "ERROR: Android settings Gradle file missing."
+            exit 1
+          fi
+
+          APP_GRADLE="android/app/build.gradle"
+
+          if [[ ! -f "$APP_GRADLE" ]]; then
+            APP_GRADLE="android/app/build.gradle.kts"
+          fi
+
+          if ! grep -Eq \
+            "versionName[[:space:]]*[=]?[[:space:]]*['\"]${ABIR_VERSION}['\"]" \
+            "$APP_GRADLE"; then
+
+            echo "ERROR: Android versionName mismatch."
+
+            grep -n "versionName" "$APP_GRADLE" || true
+
+            exit 1
+          fi
+
+          # Prevent broken workspace dependency.
+          if grep -Rqs \
+            --exclude-dir=node_modules \
+            '@workspace/api-client-react' \
+            package.json \
+            pnpm-lock.yaml 2>/dev/null; then
+
+            echo "ERROR:"
+            echo "@workspace/api-client-react detected."
+
+            exit 1
+          fi
+
+          echo ""
           echo "Project verification successful."
 
-      # 8. Install JavaScript dependencies
+      # 11. Install dependencies
       - name: Install project dependencies
         shell: bash
         run: |
@@ -174,7 +345,7 @@ jobs:
 
           pnpm install --no-frozen-lockfile
 
-      # 9. Check Expo packages
+      # 12. Verify Expo
       - name: Verify Expo and React Native
         shell: bash
         run: |
@@ -182,13 +353,29 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          echo "Node: $(node --version)"
-          echo "pnpm: $(pnpm --version)"
+          echo "Node:"
+          node --version
+
+          echo "pnpm:"
+          pnpm --version
+
+          echo "Java:"
+          java -version
+
+          echo "ADB:"
+          "$ANDROID_SDK_ROOT/platform-tools/adb" version
+
+          echo ""
+          echo "Package versions:"
 
           node <<'NODE'
           const p = require('./package.json');
 
-          for (const name of ['expo', 'react-native', 'expo-camera']) {
+          for (const name of [
+            'expo',
+            'react-native',
+            'expo-camera'
+          ]) {
             const version =
               p.dependencies?.[name] ||
               p.devDependencies?.[name] ||
@@ -198,33 +385,17 @@ jobs:
           }
           NODE
 
+          echo ""
           echo "Checking Expo CLI..."
 
           if pnpm exec expo --version; then
             echo "Expo CLI is available."
           else
-            echo "WARNING: Expo CLI version check unavailable."
+            echo "WARNING: Expo CLI check unavailable."
             echo "Continuing with native Android build."
           fi
 
-      # 10. Android SDK
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      # 11. Install SDK packages
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
-
-      # 12. Prepare Android
+      # 13. Prepare Android
       - name: Prepare Android project
         shell: bash
         run: |
@@ -232,41 +403,46 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          mkdir -p android
-
-          printf 'sdk.dir=%s\n' "$ANDROID_HOME" \
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" \
             > android/local.properties
 
           chmod +x android/gradlew
 
           echo "Android SDK configured."
 
-          if [[ -f android/gradle/wrapper/gradle-wrapper.jar ]]; then
-            echo "Gradle wrapper JAR found."
-          else
+          cat android/local.properties
+
+          if [[ ! -f android/gradle/wrapper/gradle-wrapper.jar ]]; then
             echo "ERROR: Gradle wrapper JAR missing!"
             exit 1
           fi
 
-          if [[ -f android/gradle/wrapper/gradle-wrapper.properties ]]; then
-            cat android/gradle/wrapper/gradle-wrapper.properties
-          else
+          if [[ ! -f android/gradle/wrapper/gradle-wrapper.properties ]]; then
             echo "ERROR: Gradle wrapper properties missing!"
             exit 1
           fi
 
-          # Fix known Kotlin compatibility issue if present
+          echo ""
+          echo "Gradle wrapper properties:"
+          cat android/gradle/wrapper/gradle-wrapper.properties
+
+          # Known Kotlin compatibility fix.
           while IFS= read -r -d '' FILE; do
+
             sed -i \
               's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
               "$FILE"
+
           done < <(
-            grep -RIlZ --exclude-dir=node_modules \
-              'ResolveInfoFlags.of(0)' \
-              modules android 2>/dev/null || true
+            grep -RIlZ \
+              --exclude-dir=node_modules \
+              'ResolveInfoFlags\.of(0)' \
+              modules \
+              android \
+              2>/dev/null || true
           )
 
-      # 13. Gradle memory
+      # 14. Configure Gradle
       - name: Configure Gradle
         shell: bash
         run: |
@@ -282,11 +458,13 @@ jobs:
           kotlin.daemon.jvm.options=-Xmx2g
           EOF
 
-      # 14. Gradle cache
+          echo "Gradle configured."
+
+      # 15. Gradle cache
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      # 15. Check Gradle
+      # 16. Check Gradle
       - name: Check Gradle configuration
         shell: bash
         run: |
@@ -296,7 +474,7 @@ jobs:
 
           ./gradlew --version
 
-      # 16. Build APK
+      # 17. Build APK
       - name: Build Abir AI Release APK
         shell: bash
         run: |
@@ -310,7 +488,7 @@ jobs:
             --warning-mode all \
             2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
 
-      # 17. Find APK
+      # 18. Find APK
       - name: Collect release APK
         if: success()
         shell: bash
@@ -319,13 +497,23 @@ jobs:
 
           APK_DIR="$PROJECT_ROOT/android/app/build/outputs/apk/release"
 
-          APK_PATH="$(find "$APK_DIR" \
-            -type f -name '*.apk' -print -quit)"
+          APK_PATH="$(
+            find "$APK_DIR" \
+              -type f \
+              -name '*.apk' \
+              -print \
+              -quit \
+              2>/dev/null || true
+          )"
 
           if [[ -z "$APK_PATH" ]]; then
+
             echo "ERROR: APK was not generated!"
+
             find "$PROJECT_ROOT/android/app/build/outputs" \
-              -type f -print || true
+              -type f \
+              -print || true
+
             exit 1
           fi
 
@@ -334,11 +522,14 @@ jobs:
           cp "$APK_PATH" \
             "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
-          test -s "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
+          test -s \
+            "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
+          echo ""
+          echo "APK READY:"
           ls -lh "$GITHUB_WORKSPACE/release/"
 
-      # 18. Upload APK
+      # 19. Upload APK
       - name: Upload Abir AI APK
         if: success()
         uses: actions/upload-artifact@v4
@@ -348,7 +539,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 19. Upload error logs
+      # 20. Upload error logs
       - name: Upload build error logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -360,4 +551,3 @@ jobs:
             abir_extracted/**/android/app/build/outputs/logs/**
           if-no-files-found: warn
           retention-days: 7
-          
