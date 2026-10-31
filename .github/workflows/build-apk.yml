@@ -1,3 +1,4 @@
+
 name: Build Abir AI 5.4.24
 
 on:
@@ -49,6 +50,7 @@ jobs:
           run_install: false
 
       - name: Verify build tools
+        shell: bash
         run: |
           set -euo pipefail
           node --version
@@ -57,12 +59,15 @@ jobs:
           java -version
 
       - name: Setup Android SDK
+        shell: bash
         run: |
           set -euo pipefail
+
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
 
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+            SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
           fi
 
           if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
@@ -81,38 +86,51 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
       - name: Find Abir AI source ZIP
+        shell: bash
         run: |
           set -euo pipefail
 
           ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
-            \( -iname 'AbirAI-5.4.24*.zip' -o -iname 'Abir-AI-5.4.24*.zip' \) \
+            \( -iname 'AbirAI-5.4.24*.zip' \
+               -o -iname 'Abir-AI-5.4.24*.zip' \) \
             -print | sort | tail -n 1)"
 
           if [ -z "$ZIP_FILE" ]; then
             echo "::error::Abir AI 5.4.24 source ZIP was not found."
-            find "$GITHUB_WORKSPACE" -maxdepth 5 -type f -iname '*.zip' -print || true
+            find "$GITHUB_WORKSPACE" -maxdepth 5 \
+              -type f -iname '*.zip' -print || true
             exit 1
           fi
 
+          echo "Using source: $ZIP_FILE"
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
       - name: Verify and extract source ZIP
+        shell: bash
         run: |
           set -euo pipefail
+
           unzip -tq "$ZIP_FILE"
+
           rm -rf "$EXTRACT_DIR"
           mkdir -p "$EXTRACT_DIR"
+
           unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
 
+          echo "Project files:"
           find "$EXTRACT_DIR" -maxdepth 6 -type f \
-            \( -name package.json -o -name pnpm-lock.yaml \
-               -o -name gradlew -o -name settings.gradle \
+            \( -name package.json \
+               -o -name pnpm-lock.yaml \
+               -o -name gradlew \
+               -o -name settings.gradle \
                -o -name settings.gradle.kts \) \
             -print | sort | head -n 150
 
       - name: Detect app root and Android Gradle directory
+        shell: bash
         run: |
           set -euo pipefail
+
           PROJECT_ROOT=""
           GRADLE_DIR=""
 
@@ -132,12 +150,13 @@ jobs:
                 GRADLE_DIR="$android_dir"
                 break 2
               fi
+
               candidate="$(dirname "$candidate")"
             done
           done < <(find "$EXTRACT_DIR" -type f -name gradlew -print | sort)
 
           if [ -z "$PROJECT_ROOT" ] || [ -z "$GRADLE_DIR" ]; then
-            echo "::error::Could not locate app root and Android Gradle project."
+            echo "::error::Could not find the Android project root."
             exit 1
           fi
 
@@ -148,42 +167,56 @@ jobs:
           echo "GRADLE_DIR=$GRADLE_DIR" >> "$GITHUB_ENV"
 
           echo "App root: $PROJECT_ROOT"
-          echo "Gradle root: $GRADLE_DIR"
+          echo "Android root: $GRADLE_DIR"
 
-      - name: Verify app configuration
+      - name: Verify Abir AI project
         working-directory: ${{ env.PROJECT_ROOT }}
+        shell: bash
         run: |
           set -euo pipefail
+
           test -f package.json
+          test -f app.json
 
           node <<'NODE'
           const p = require('./package.json');
-          const expo = p.dependencies?.expo || p.devDependencies?.expo;
-          const rn = p.dependencies?.['react-native'] || p.devDependencies?.['react-native'];
 
-          console.log('Package:', p.name || '(unnamed)');
-          console.log('Version:', p.version || '(not specified)');
-          console.log('Expo:', expo || 'MISSING');
-          console.log('React Native:', rn || 'MISSING');
+          const expo =
+            p.dependencies?.expo || p.devDependencies?.expo;
+
+          const rn =
+            p.dependencies?.['react-native'] ||
+            p.devDependencies?.['react-native'];
+
+          console.log('Project:', p.name);
+          console.log('Version:', p.version);
+          console.log('Expo:', expo);
+          console.log('React Native:', rn);
 
           if (!expo) throw new Error('Expo dependency missing');
           if (!rn) throw new Error('React Native dependency missing');
+
+          if (p.version !== '5.4.24') {
+            console.log('Warning: package version differs from expected version.');
+          }
           NODE
 
       - name: Install JavaScript dependencies
         working-directory: ${{ env.PROJECT_ROOT }}
+        shell: bash
         run: |
           set -euo pipefail
 
           if [ -f pnpm-lock.yaml ]; then
             pnpm install --frozen-lockfile
           else
-            echo "::warning::pnpm-lock.yaml not found."
+            echo "::warning::No pnpm lockfile; installing from package.json."
             pnpm install --no-frozen-lockfile
           fi
 
-      - name: Diagnose Expo configuration
+      - name: Verify Expo and React Native
         working-directory: ${{ env.PROJECT_ROOT }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -197,35 +230,62 @@ jobs:
 
           node <<'NODE'
           const fs = require('fs');
-          const config = JSON.parse(
-            fs.readFileSync(process.env.GITHUB_WORKSPACE + '/expo-config.json', 'utf8')
-          );
-          console.log('Expo config OK:', config.name, config.slug, config.version);
+          const path = process.env.GITHUB_WORKSPACE + '/expo-config.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+          console.log('Expo configuration valid.');
+          console.log('Name:', config.name);
+          console.log('Slug:', config.slug);
+          console.log('Version:', config.version);
           NODE
 
-      - name: Prepare Android Gradle project
+      - name: Prepare Android Gradle project safely
+        shell: bash
         run: |
           set -euo pipefail
 
           test -f "$GRADLE_DIR/gradlew"
+          test -f "$GRADLE_DIR/gradle.properties"
+
           chmod +x "$GRADLE_DIR/gradlew"
 
           printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" \
             > "$GRADLE_DIR/local.properties"
 
-          touch "$GRADLE_DIR/gradle.properties"
+          PROPS="$GRADLE_DIR/gradle.properties"
 
-          grep -q '^org.gradle.jvmargs=' "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
-            >> "$GRADLE_DIR/gradle.properties"
+          ensure_property() {
+            KEY="$1"
+            VALUE="$2"
 
-          grep -q '^org.gradle.daemon=' "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.daemon=false' >> "$GRADLE_DIR/gradle.properties"
+            if ! grep -q "^${KEY}=" "$PROPS"; then
+              # IMPORTANT:
+              # Always start appended properties on a new line.
+              # The original file has no final newline.
+              printf '\n%s=%s\n' "$KEY" "$VALUE" >> "$PROPS"
+            fi
+          }
 
-          grep -q '^org.gradle.parallel=' "$GRADLE_DIR/gradle.properties" || \
-            echo 'org.gradle.parallel=false' >> "$GRADLE_DIR/gradle.properties"
+          ensure_property \
+            "org.gradle.jvmargs" \
+            "-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
+
+          ensure_property "org.gradle.daemon" "false"
+          ensure_property "org.gradle.parallel" "false"
+
+          echo "Final Gradle properties:"
+          cat "$PROPS"
+
+          echo "Checking that every property is on its own line..."
+          if grep -nE '^\[\].*org\.gradle\.' "$PROPS"; then
+            echo "::error::Malformed Gradle properties detected."
+            exit 1
+          fi
+
+          echo "Gradle properties prepared successfully."
 
       - name: Apply Kotlin compatibility patch
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -236,12 +296,37 @@ jobs:
             xargs -0 -r sed -i \
               's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g'
 
-      - name: Check Gradle configuration
-        working-directory: ${{ env.GRADLE_DIR }}
+      - name: Verify Expo Autolinking directly
+        working-directory: ${{ env.PROJECT_ROOT }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew --version 2>&1 | tee "$GITHUB_WORKSPACE/gradle-version.log"
+          echo "Checking Expo Autolinking CLI..."
+
+          node --no-warnings --eval \
+            "require('expo/bin/autolinking')" \
+            expo-modules-autolinking --version
+
+          echo "Checking React Native configuration..."
+
+          pnpm exec expo-modules-autolinking \
+            react-native-config \
+            --platform android \
+            > "$GITHUB_WORKSPACE/autolinking-config.json"
+
+          test -s "$GITHUB_WORKSPACE/autolinking-config.json"
+
+          echo "Expo Autolinking configuration generated."
+
+      - name: Check Gradle configuration
+        working-directory: ${{ env.GRADLE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./gradlew --version \
+            2>&1 | tee "$GITHUB_WORKSPACE/gradle-version.log"
 
           ./gradlew help \
             --no-daemon \
@@ -249,8 +334,9 @@ jobs:
             --info \
             2>&1 | tee "$GITHUB_WORKSPACE/gradle-config.log"
 
-      - name: Build Release APK
+      - name: Build Abir AI Release APK
         working-directory: ${{ env.GRADLE_DIR }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -263,26 +349,32 @@ jobs:
 
       - name: Collect and verify APK
         if: success()
+        shell: bash
         run: |
           set -euo pipefail
 
           APK="$(find "$GRADLE_DIR/app/build/outputs/apk" \
-            -type f -name '*.apk' -print 2>/dev/null | sort | tail -n 1 || true)"
+            -type f -name '*.apk' \
+            -print 2>/dev/null | sort | tail -n 1 || true)"
 
           if [ -z "$APK" ]; then
-            echo "::error::No APK was found."
-            find "$GRADLE_DIR" -path '*/build/outputs/*' -type f -print || true
+            echo "::error::No APK file was generated."
+            find "$GRADLE_DIR" \
+              -path '*/build/outputs/*' -type f -print || true
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
 
-          cp "$APK" "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
           test -s "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
+
+          echo "APK successfully generated:"
           ls -lh "$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
-      - name: Upload APK artifact
+      - name: Upload Release APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -291,17 +383,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload diagnostics and build logs
+      - name: Upload Build Diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Abir-AI-5.4.24-Build-Diagnostics
           path: |
             expo-config.json
+            autolinking-config.json
             gradle-version.log
             gradle-config.log
             abir-build.log
-            abir_extracted/**/build/outputs/logs/**
+            abir_extracted/**/android/build/reports/**
+            abir_extracted/**/android/app/build/outputs/logs/**
           if-no-files-found: warn
           retention-days: 7
           
