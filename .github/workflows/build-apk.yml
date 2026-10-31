@@ -18,15 +18,6 @@ jobs:
     env:
       ZIP_NAME: AbirAI-5.4.16-REFERENCE-UI-EXACT-AAPT-FIXED.zip
       PROJECT_DIR: extracted
-      JAVA_VERSION: "17"
-      NODE_VERSION: "20"
-      PNPM_VERSION: "10.12.4"
-
-      GRADLE_OPTS: >-
-        -Dorg.gradle.jvmargs=-Xmx4g
-        -Dorg.gradle.daemon=false
-        -Dorg.gradle.parallel=false
-        -Dkotlin.daemon.jvm.options=-Xmx2g
 
     steps:
 
@@ -62,36 +53,12 @@ jobs:
           version: "10.12.4"
 
       # ========================================================
-      # 5. SHOW ENVIRONMENT
-      # ========================================================
-      - name: Show environment
-        shell: bash
-        run: |
-          set -eux
-
-          echo "========================================"
-          echo "BUILD ENVIRONMENT"
-          echo "========================================"
-
-          java -version
-          node --version
-          npm --version
-          pnpm --version
-
-          echo ""
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
-
-      # ========================================================
-      # 6. FIND ZIP
+      # 5. FIND ZIP
       # ========================================================
       - name: Find Abir AI ZIP
         shell: bash
         run: |
           set -eux
-
-          echo "Searching for:"
-          echo "${ZIP_NAME}"
 
           ZIP_PATH="$(find . \
             -type f \
@@ -99,10 +66,8 @@ jobs:
             -print -quit || true)"
 
           if [ -z "$ZIP_PATH" ]; then
-            echo ""
-            echo "ERROR: Abir AI ZIP not found."
-            echo ""
-            echo "Available ZIP files:"
+            echo "ERROR: ${ZIP_NAME} not found."
+
             find . \
               -type f \
               \( -iname "*.zip" -o -iname "*.ZIP" \) \
@@ -112,8 +77,7 @@ jobs:
             exit 1
           fi
 
-          echo ""
-          echo "ZIP FOUND:"
+          echo "ZIP:"
           echo "$ZIP_PATH"
 
           rm -rf "${PROJECT_DIR}"
@@ -121,28 +85,13 @@ jobs:
 
           unzip -q "$ZIP_PATH" -d "${PROJECT_DIR}"
 
-          echo ""
-          echo "Extraction completed."
-
       # ========================================================
-      # 7. FIND REAL PROJECT ROOT
-      #
-      # IMPORTANT:
-      # We DO NOT use the first gradlew we find.
-      #
-      # Correct root must contain:
-      #   package.json
-      #   android/
-      #   android/gradlew
+      # 6. FIND REAL PROJECT ROOT
       # ========================================================
-      - name: Detect real project root
+      - name: Detect project root
         shell: bash
         run: |
           set -eux
-
-          echo "========================================"
-          echo "SEARCHING FOR REAL PROJECT ROOT"
-          echo "========================================"
 
           PROJECT_ROOT=""
 
@@ -163,29 +112,10 @@ jobs:
           )
 
           if [ -z "$PROJECT_ROOT" ]; then
+            echo "ERROR: Project root not found."
 
-            echo ""
-            echo "ERROR: Could not find project root."
-            echo ""
-            echo "Looking for package.json files:"
             find "${PROJECT_DIR}" \
-              -type f \
-              -name "package.json" \
-              -print \
-              | sort || true
-
-            echo ""
-            echo "Looking for gradlew files:"
-            find "${PROJECT_DIR}" \
-              -type f \
-              -name "gradlew" \
-              -print \
-              | sort || true
-
-            echo ""
-            echo "Extracted directory structure:"
-            find "${PROJECT_DIR}" \
-              -maxdepth 5 \
+              -maxdepth 6 \
               -type f \
               -print \
               | sort \
@@ -197,106 +127,26 @@ jobs:
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
           echo ""
-          echo "========================================"
-          echo "REAL PROJECT ROOT FOUND"
-          echo "========================================"
+          echo "PROJECT ROOT:"
           echo "$PROJECT_ROOT"
 
       # ========================================================
-      # 8. VERIFY PROJECT ROOT
+      # 7. VERIFY PROJECT
       # ========================================================
-      - name: Verify project root
+      - name: Verify project
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -eux
 
-          echo "========================================"
-          echo "VERIFYING PROJECT"
-          echo "========================================"
-
           test -f package.json
-          test -d android
           test -f android/gradlew
           test -f android/settings.gradle
 
-          echo ""
-          echo "package.json:"
-          ls -lh package.json
-
-          echo ""
-          echo "Android directory:"
-          ls -la android
-
-          echo ""
-          echo "Project root confirmed:"
-          pwd
+          echo "Project verified."
 
       # ========================================================
-      # 9. PREPARE GRADLE WRAPPER
-      # ========================================================
-      - name: Prepare Gradle wrapper
-        working-directory: ${{ env.PROJECT_ROOT }}/android
-        shell: bash
-        run: |
-          set -eux
-
-          chmod +x gradlew
-
-          echo "Gradle version:"
-          ./gradlew --version
-
-      # ========================================================
-      # 10. ANDROID SDK
-      # ========================================================
-      - name: Prepare Android SDK
-        shell: bash
-        run: |
-          set -eux
-
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
-
-          if [ -z "$SDK" ]; then
-            echo "ERROR: Android SDK not found."
-            exit 1
-          fi
-
-          echo "Android SDK:"
-          echo "$SDK"
-
-          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK/cmdline-tools" \
-              -type f \
-              -name sdkmanager \
-              -print -quit \
-              2>/dev/null || true)"
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
-
-          echo "sdkmanager:"
-          echo "$SDKMANAGER"
-
-          yes | "$SDKMANAGER" --licenses \
-            >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "platforms;android-36" \
-            "build-tools;35.0.0" \
-            "build-tools;36.0.0"
-
-          echo ""
-          echo "Android SDK ready."
-
-      # ========================================================
-      # 11. INSTALL JS DEPENDENCIES
+      # 8. INSTALL DEPENDENCIES
       # ========================================================
       - name: Install JavaScript dependencies
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -304,15 +154,13 @@ jobs:
         run: |
           set -eux
 
-          corepack enable || true
-
           pnpm install --no-frozen-lockfile
 
           echo ""
-          echo "JavaScript dependencies installed."
+          echo "Dependencies installed."
 
       # ========================================================
-      # 12. VERIFY JS / EXPO
+      # 9. VERIFY MAIN PACKAGES
       # ========================================================
       - name: Verify Expo and React Native
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -328,77 +176,79 @@ jobs:
           pnpm --version
 
           echo ""
-          echo "Expo:"
+          echo "Expo CLI:"
           pnpm exec expo --version
+
+          echo ""
+          echo "Expo package:"
+          node -p "require('expo/package.json').version"
 
           echo ""
           echo "React Native:"
           node -p "require('react-native/package.json').version"
 
           echo ""
-          echo "Expo:"
-          node -p "require('expo/package.json').version"
-
-          echo ""
-          echo "Expo Autolinking:"
-          node -p "require('expo-modules-autolinking/package.json').version"
+          echo "Verification complete."
 
       # ========================================================
-      # 13. EXPO AUTOLINKING DIAGNOSTIC
+      # 10. DISCOVER AUTOLINKING PACKAGE
+      #
+      # Do NOT assume it is directly available from root.
       # ========================================================
-      - name: Diagnose Expo Node and Autolinking
+      - name: Locate Expo Autolinking
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -u
 
-          echo "=========================================="
-          echo "NODE / EXPO DIAGNOSTICS"
-          echo "=========================================="
+          echo "========================================"
+          echo "LOCATING EXPO AUTOLINKING"
+          echo "========================================"
+
+          FOUND=""
+
+          # First try normal Node resolution.
+          FOUND="$(node -p \
+            "require.resolve('expo-modules-autolinking/package.json')" \
+            2>/dev/null || true)"
+
+          if [ -n "$FOUND" ]; then
+            echo "Found through Node:"
+            echo "$FOUND"
+            exit 0
+          fi
+
+          # Then search node_modules.
+          FOUND="$(find node_modules \
+            -path '*/expo-modules-autolinking/package.json' \
+            -print \
+            -quit \
+            2>/dev/null || true)"
+
+          if [ -n "$FOUND" ]; then
+            echo "Found inside node_modules:"
+            echo "$FOUND"
+            exit 0
+          fi
 
           echo ""
-          echo "Node:"
-          node --version
+          echo "WARNING:"
+          echo "expo-modules-autolinking is not directly resolvable."
+          echo ""
+          echo "Installed Expo-related packages:"
+          find node_modules \
+            -maxdepth 4 \
+            -type d \
+            -name '*autolink*' \
+            -print \
+            2>/dev/null \
+            | head -50 || true
 
           echo ""
-          echo "pnpm:"
-          pnpm --version
-
-          echo ""
-          echo "Expo:"
-          pnpm exec expo --version
-
-          echo ""
-          echo "Expo Autolinking:"
-          pnpm exec expo-modules-autolinking --version
-
-          echo ""
-          echo "=========================================="
-          echo "AUTOLINKING SEARCH"
-          echo "=========================================="
-
-          pnpm exec expo-modules-autolinking search
-
-          echo ""
-          echo "=========================================="
-          echo "AUTOLINKING RESOLVE"
-          echo "=========================================="
-
-          pnpm exec expo-modules-autolinking resolve \
-            --platform android
-
-          echo ""
-          echo "=========================================="
-          echo "AUTOLINKING VERIFY"
-          echo "=========================================="
-
-          pnpm exec expo-modules-autolinking verify --verbose
-
-          echo ""
-          echo "Autolinking diagnostics completed."
+          echo "Continuing because Expo Gradle will perform its own resolution."
 
       # ========================================================
-      # 14. VERIFY ABIR MODULE
+      # 11. VERIFY CUSTOM ABIR MODULE
       # ========================================================
       - name: Verify Abir App Launcher
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -417,7 +267,7 @@ jobs:
               modules/abir-app-launcher/expo-module.config.json
 
             echo ""
-            echo "Module configuration:"
+            echo "Module config:"
             cat modules/abir-app-launcher/expo-module.config.json
 
           else
@@ -427,7 +277,49 @@ jobs:
           fi
 
       # ========================================================
-      # 15. RESOLVE INFO FLAGS FIX
+      # 12. ANDROID SDK
+      # ========================================================
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -eux
+
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+
+          if [ -z "$SDK" ]; then
+            echo "ERROR: Android SDK not found."
+            exit 1
+          fi
+
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" \
+              -type f \
+              -name sdkmanager \
+              -print -quit \
+              2>/dev/null || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses \
+            >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "build-tools;36.0.0"
+
+          echo "Android SDK ready."
+
+      # ========================================================
+      # 13. FIX ResolveInfoFlags
       # ========================================================
       - name: Fix Android ResolveInfoFlags
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -441,17 +333,16 @@ jobs:
             2>/dev/null \
             | while read -r FILE; do
 
-                echo "Fixing:"
-                echo "$FILE"
+              echo "Fixing: $FILE"
 
-                sed -i \
-                  's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
-                  "$FILE"
+              sed -i \
+                's/ResolveInfoFlags\.of(0)/ResolveInfoFlags.of(0L)/g' \
+                "$FILE"
 
             done || true
 
       # ========================================================
-      # 16. PNG VALIDATION
+      # 14. VALIDATE PNG
       # ========================================================
       - name: Validate PNG assets
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -466,14 +357,10 @@ jobs:
             MAGIC="$(xxd -p -l 8 "$FILE" 2>/dev/null || true)"
 
             if [ "$MAGIC" != "89504e470d0a1a0a" ]; then
-
-              echo ""
               echo "INVALID PNG:"
               echo "$FILE"
               echo "Signature: $MAGIC"
-
               BAD=1
-
             fi
 
           done < <(
@@ -484,17 +371,15 @@ jobs:
           )
 
           if [ "$BAD" -ne 0 ]; then
-            echo ""
-            echo "ERROR: Invalid PNG detected."
             exit 1
           fi
 
-          echo "All PNG assets are valid."
+          echo "PNG validation passed."
 
       # ========================================================
-      # 17. GRADLE MEMORY
+      # 15. GRADLE MEMORY
       # ========================================================
-      - name: Configure Gradle memory
+      - name: Configure Gradle
         shell: bash
         run: |
           set -eux
@@ -509,12 +394,10 @@ jobs:
           kotlin.daemon.jvm.options=-Xmx2g
           EOF
 
-          cat ~/.gradle/gradle.properties
-
       # ========================================================
-      # 18. CLEAN
+      # 16. PREPARE GRADLE
       # ========================================================
-      - name: Clean Android project
+      - name: Prepare Gradle
         working-directory: ${{ env.PROJECT_ROOT }}/android
         shell: bash
         run: |
@@ -522,13 +405,24 @@ jobs:
 
           chmod +x gradlew
 
+          ./gradlew --version
+
+      # ========================================================
+      # 17. CLEAN
+      # ========================================================
+      - name: Clean Android project
+        working-directory: ${{ env.PROJECT_ROOT }}/android
+        shell: bash
+        run: |
+          set -eux
+
           ./gradlew clean \
             --no-daemon \
             --stacktrace \
             --warning-mode all
 
       # ========================================================
-      # 19. BUILD APK
+      # 18. BUILD RELEASE APK
       # ========================================================
       - name: Build Release APK
         working-directory: ${{ env.PROJECT_ROOT }}/android
@@ -538,9 +432,9 @@ jobs:
 
           chmod +x gradlew
 
-          echo "=========================================="
-          echo "BUILDING ABIR AI RELEASE APK"
-          echo "=========================================="
+          echo "========================================"
+          echo "BUILDING ABIR AI APK"
+          echo "========================================"
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
@@ -550,7 +444,7 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
 
       # ========================================================
-      # 20. COLLECT APK
+      # 19. COLLECT APK
       # ========================================================
       - name: Collect APK
         if: success()
@@ -565,8 +459,7 @@ jobs:
             -print -quit)"
 
           if [ -z "$APK" ]; then
-
-            echo "ERROR: Release APK not found."
+            echo "ERROR: APK not found."
 
             find android/app/build/outputs \
               -type f \
@@ -581,16 +474,11 @@ jobs:
           cp "$APK" \
             "$GITHUB_WORKSPACE/release/Abir-AI-5.4.16-release.apk"
 
-          echo ""
-          echo "=========================================="
-          echo "APK CREATED"
-          echo "=========================================="
-
           ls -lh \
             "$GITHUB_WORKSPACE/release/Abir-AI-5.4.16-release.apk"
 
       # ========================================================
-      # 21. UPLOAD APK
+      # 20. UPLOAD APK
       # ========================================================
       - name: Upload Release APK
         if: success()
@@ -601,7 +489,7 @@ jobs:
           if-no-files-found: error
 
       # ========================================================
-      # 22. UPLOAD DIAGNOSTICS ON FAILURE
+      # 21. UPLOAD LOG ON FAILURE
       # ========================================================
       - name: Upload diagnostics
         if: failure()
