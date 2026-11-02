@@ -17,8 +17,8 @@ concurrency:
 env:
   ABIR_VERSION: "5.4.24"
 
-  SOURCE_ZIP: "AbirAI-5.4.24-OFFLINE-ONLINE-INTELLIGENCE-UPGRADE-KOTLIN-FIXED.zip"
-  EXPECTED_SHA256: "eb31ea6277684204bd487ed5e34892967b7f60159573de9ae2641f95fb97ea56"
+  SOURCE_ZIP: "AbirAI-5.4.24-RUNTIME-IS-SPEAKING-FIXED.zip"
+  EXPECTED_SHA256: "b3ea4eb01e557a0d7de1d00585f8c7f312b00c394bec00a872597a423100a26e"
 
   ANDROID_HOME: /usr/local/lib/android/sdk
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -157,18 +157,24 @@ jobs:
             "$GITHUB_WORKSPACE/release"
 
       # ==========================================
-      # 8. FIND EXACT FIXED SOURCE ZIP
+      # 8. FIND EXACT RUNTIME FIXED ZIP
       # ==========================================
 
-      - name: Find Abir AI Kotlin Fixed ZIP
+      - name: Find Abir AI Runtime Fixed ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="$GITHUB_WORKSPACE/$SOURCE_ZIP"
+          ZIP="$(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -name "$SOURCE_ZIP" \
+              -not -path "*/.git/*" \
+              -print -quit
+          )"
 
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::Required fixed source ZIP was not found."
+          if [ -z "$ZIP" ]; then
+            echo "::error::Required Runtime Fixed ZIP was not found."
             echo "Expected: $SOURCE_ZIP"
 
             echo "ZIP files in repository:"
@@ -183,8 +189,8 @@ jobs:
 
           cp "$ZIP" "$GITHUB_WORKSPACE/abir_build/source.zip"
 
-          echo "Source ZIP selected:"
-          echo "$SOURCE_ZIP"
+          echo "Selected source:"
+          echo "$ZIP"
 
       # ==========================================
       # 9. VERIFY ZIP AND SHA-256
@@ -197,10 +203,12 @@ jobs:
 
           ZIP="$GITHUB_WORKSPACE/abir_build/source.zip"
 
+          echo "Testing ZIP integrity..."
           unzip -tq "$ZIP"
 
           ACTUAL_SHA256="$(sha256sum "$ZIP" | awk '{print $1}')"
 
+          echo ""
           echo "Expected SHA-256:"
           echo "$EXPECTED_SHA256"
 
@@ -211,7 +219,7 @@ jobs:
             > "$GITHUB_WORKSPACE/build-diagnostics/source-sha256.txt"
 
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "::error::Source ZIP SHA-256 does not match the Kotlin Fixed ZIP."
+            echo "::error::Source ZIP SHA-256 mismatch."
             exit 1
           fi
 
@@ -360,7 +368,32 @@ jobs:
           done
 
       # ==========================================
-      # 14. PREPARE ANDROID GRADLE
+      # 14. VERIFY RUNTIME FIX
+      # ==========================================
+
+      - name: Verify isSpeaking runtime fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          if ! grep -Fq \
+            'const isSpeaking = speakingId !== null;' \
+            app/index.tsx; then
+
+            echo "::error::Expected isSpeaking declaration was not found."
+            exit 1
+          fi
+
+          echo "isSpeaking declaration found."
+
+          grep -n -F \
+            'const isSpeaking = speakingId !== null;' \
+            app/index.tsx
+
+      # ==========================================
+      # 15. PREPARE ANDROID GRADLE
       # ==========================================
 
       - name: Prepare Android Gradle wrapper
@@ -378,7 +411,7 @@ jobs:
           cat gradle/wrapper/gradle-wrapper.properties
 
       # ==========================================
-      # 15. INSTALL JAVASCRIPT DEPENDENCIES
+      # 16. INSTALL JAVASCRIPT DEPENDENCIES
       # ==========================================
 
       - name: Install JavaScript dependencies
@@ -398,7 +431,7 @@ jobs:
           echo "JavaScript dependencies installed."
 
       # ==========================================
-      # 16. VERIFY EXPO
+      # 17. VERIFY EXPO
       # ==========================================
 
       - name: Verify Expo configuration
@@ -418,7 +451,7 @@ jobs:
           echo "Expo configuration generated."
 
       # ==========================================
-      # 17. VERIFY DEPENDENCIES
+      # 18. VERIFY DEPENDENCIES
       # ==========================================
 
       - name: Verify Expo Android dependencies
@@ -449,7 +482,7 @@ jobs:
           NODE
 
       # ==========================================
-      # 18. PREPARE GRADLE PROPERTIES
+      # 19. PREPARE GRADLE PROPERTIES
       # ==========================================
 
       - name: Prepare Gradle properties
@@ -493,7 +526,7 @@ jobs:
           cat gradle.properties
 
       # ==========================================
-      # 19. GRADLE PREFLIGHT
+      # 20. GRADLE PREFLIGHT
       # ==========================================
 
       - name: Run Gradle preflight
@@ -516,7 +549,7 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-help.log"
 
       # ==========================================
-      # 20. BUILD RELEASE APK
+      # 21. BUILD RELEASE APK
       # ==========================================
 
       - name: Build Abir AI Release APK
@@ -545,7 +578,7 @@ jobs:
           echo "Release build command completed."
 
       # ==========================================
-      # 21. FIND AND VERIFY RELEASE APK
+      # 22. FIND AND VERIFY RELEASE APK
       # ==========================================
 
       - name: Collect and verify Release APK
@@ -566,21 +599,21 @@ jobs:
             exit 1
           fi
 
-          APK="$(
+          mapfile -d '' APK_FILES < <(
             find "$APK_DIR" \
               -type f \
               -name "*.apk" \
-              -print |
-            sort |
-            head -n 1
-          )"
+              -print0 |
+            sort -z
+          )
 
-          if [ -z "$APK" ]; then
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
             echo "::error::No Release APK was generated."
-
             find "$APK_DIR" -type f -print || true
             exit 1
           fi
+
+          APK="${APK_FILES[0]}"
 
           OUTPUT_APK="$GITHUB_WORKSPACE/release/Abir-AI-5.4.24-release.apk"
 
@@ -590,6 +623,7 @@ jobs:
 
           unzip -tq "$OUTPUT_APK"
 
+          echo "Generated APK:"
           ls -lh "$OUTPUT_APK"
 
           sha256sum "$OUTPUT_APK" \
@@ -598,7 +632,7 @@ jobs:
           echo "Release APK verified."
 
       # ==========================================
-      # 22. UPLOAD RELEASE APK
+      # 23. UPLOAD RELEASE APK
       # ==========================================
 
       - name: Upload Abir AI Release APK
@@ -611,7 +645,7 @@ jobs:
           retention-days: 14
 
       # ==========================================
-      # 23. UPLOAD BUILD DIAGNOSTICS
+      # 24. UPLOAD BUILD DIAGNOSTICS
       # ==========================================
 
       - name: Upload Build Diagnostics
@@ -624,7 +658,7 @@ jobs:
           retention-days: 14
 
       # ==========================================
-      # 24. FINAL BUILD SUMMARY
+      # 25. FINAL BUILD SUMMARY
       # ==========================================
 
       - name: Build summary
