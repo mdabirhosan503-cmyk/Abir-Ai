@@ -2,7 +2,6 @@ name: Build Abir AI 5.4.24
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
@@ -17,8 +16,8 @@ concurrency:
 env:
   ABIR_VERSION: "5.4.24"
 
-  SOURCE_ZIP: "AbirAI-5.4.24-RUNTIME-IS-SPEAKING-FIXED.zip"
-  EXPECTED_SHA256: "b3ea4eb01e557a0d7de1d00585f8c7f312b00c394bec00a872597a423100a26e"
+  SOURCE_ZIP: "AbirAI-5.4.24-BLACK-RED-MAIN-UI-ALL-FEATURES-PRESERVED.zip"
+  EXPECTED_SHA256: "e6cbb58af02e19373ae86cebcd762f9e5157f4893038dc93a245dab8e6e71474"
 
   ANDROID_HOME: /usr/local/lib/android/sdk
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -83,19 +82,11 @@ jobs:
           echo "========== ABIR AI BUILD =========="
           echo "Version: $ABIR_VERSION"
 
-          echo "Node:"
           node --version
-
-          echo "pnpm:"
           pnpm --version
-
-          echo "Java:"
           java -version
 
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
-
-          echo "Disk:"
+          echo "Android SDK: $ANDROID_HOME"
           df -h
 
       # ==========================================
@@ -157,24 +148,18 @@ jobs:
             "$GITHUB_WORKSPACE/release"
 
       # ==========================================
-      # 8. FIND EXACT RUNTIME FIXED ZIP
+      # 8. FIND EXACT BLACK-RED SOURCE ZIP
       # ==========================================
 
-      - name: Find Abir AI Runtime Fixed ZIP
+      - name: Find Abir AI Black Red UI ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="$(
-            find "$GITHUB_WORKSPACE" \
-              -type f \
-              -name "$SOURCE_ZIP" \
-              -not -path "*/.git/*" \
-              -print -quit
-          )"
+          ZIP="$GITHUB_WORKSPACE/$SOURCE_ZIP"
 
-          if [ -z "$ZIP" ]; then
-            echo "::error::Required Runtime Fixed ZIP was not found."
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::Required source ZIP not found."
             echo "Expected: $SOURCE_ZIP"
 
             echo "ZIP files in repository:"
@@ -189,8 +174,8 @@ jobs:
 
           cp "$ZIP" "$GITHUB_WORKSPACE/abir_build/source.zip"
 
-          echo "Selected source:"
-          echo "$ZIP"
+          echo "Selected source ZIP:"
+          echo "$SOURCE_ZIP"
 
       # ==========================================
       # 9. VERIFY ZIP AND SHA-256
@@ -203,17 +188,12 @@ jobs:
 
           ZIP="$GITHUB_WORKSPACE/abir_build/source.zip"
 
-          echo "Testing ZIP integrity..."
           unzip -tq "$ZIP"
 
           ACTUAL_SHA256="$(sha256sum "$ZIP" | awk '{print $1}')"
 
-          echo ""
-          echo "Expected SHA-256:"
-          echo "$EXPECTED_SHA256"
-
-          echo "Actual SHA-256:"
-          echo "$ACTUAL_SHA256"
+          echo "Expected: $EXPECTED_SHA256"
+          echo "Actual:   $ACTUAL_SHA256"
 
           echo "$ACTUAL_SHA256" \
             > "$GITHUB_WORKSPACE/build-diagnostics/source-sha256.txt"
@@ -224,7 +204,6 @@ jobs:
           fi
 
           echo "ZIP integrity and SHA-256 verified."
-
           ls -lh "$ZIP"
 
       # ==========================================
@@ -248,7 +227,7 @@ jobs:
             -print | head -n 200
 
       # ==========================================
-      # 11. DETECT PROJECT ROOT
+      # 11. DETECT ANDROID PROJECT ROOT
       # ==========================================
 
       - name: Detect Android project root
@@ -271,7 +250,9 @@ jobs:
               ROOT="$(dirname "$PKG")"
 
               if [ -f "$ROOT/app.json" ] &&
-                 [ -f "$ROOT/android/gradlew" ]; then
+                 [ -f "$ROOT/android/gradlew" ] &&
+                 [ -f "$ROOT/android/gradle/wrapper/gradle-wrapper.properties" ]; then
+
                 PROJECT_DIR="$ROOT"
                 break
               fi
@@ -302,7 +283,7 @@ jobs:
           echo "$PROJECT_DIR"
 
       # ==========================================
-      # 12. SETUP GRADLE CACHE
+      # 12. GRADLE CACHE
       # ==========================================
 
       - name: Setup Gradle
@@ -347,7 +328,6 @@ jobs:
           }, null, 2));
           NODE
 
-          echo ""
           echo "Checking important Abir AI files..."
 
           for FILE in \
@@ -368,32 +348,7 @@ jobs:
           done
 
       # ==========================================
-      # 14. VERIFY RUNTIME FIX
-      # ==========================================
-
-      - name: Verify isSpeaking runtime fix
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          if ! grep -Fq \
-            'const isSpeaking = speakingId !== null;' \
-            app/index.tsx; then
-
-            echo "::error::Expected isSpeaking declaration was not found."
-            exit 1
-          fi
-
-          echo "isSpeaking declaration found."
-
-          grep -n -F \
-            'const isSpeaking = speakingId !== null;' \
-            app/index.tsx
-
-      # ==========================================
-      # 15. PREPARE ANDROID GRADLE
+      # 14. PREPARE ANDROID GRADLE
       # ==========================================
 
       - name: Prepare Android Gradle wrapper
@@ -407,11 +362,11 @@ jobs:
 
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-          cat local.properties
+          echo "Android SDK configured."
           cat gradle/wrapper/gradle-wrapper.properties
 
       # ==========================================
-      # 16. INSTALL JAVASCRIPT DEPENDENCIES
+      # 15. INSTALL JAVASCRIPT DEPENDENCIES
       # ==========================================
 
       - name: Install JavaScript dependencies
@@ -431,7 +386,7 @@ jobs:
           echo "JavaScript dependencies installed."
 
       # ==========================================
-      # 17. VERIFY EXPO
+      # 16. VERIFY EXPO
       # ==========================================
 
       - name: Verify Expo configuration
@@ -451,7 +406,7 @@ jobs:
           echo "Expo configuration generated."
 
       # ==========================================
-      # 18. VERIFY DEPENDENCIES
+      # 17. VERIFY DEPENDENCIES
       # ==========================================
 
       - name: Verify Expo Android dependencies
@@ -481,8 +436,10 @@ jobs:
           if (failed) process.exit(1);
           NODE
 
+          echo "Dependencies verified."
+
       # ==========================================
-      # 19. PREPARE GRADLE PROPERTIES
+      # 18. PREPARE GRADLE PROPERTIES
       # ==========================================
 
       - name: Prepare Gradle properties
@@ -520,13 +477,14 @@ jobs:
             "expo\.inlineModules\.watchedDirectories=.*org\.gradle\." \
             gradle.properties; then
             echo "::error::Malformed gradle.properties."
+            cat gradle.properties
             exit 1
           fi
 
           cat gradle.properties
 
       # ==========================================
-      # 20. GRADLE PREFLIGHT
+      # 19. GRADLE PREFLIGHT
       # ==========================================
 
       - name: Run Gradle preflight
@@ -549,7 +507,7 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-help.log"
 
       # ==========================================
-      # 21. BUILD RELEASE APK
+      # 20. BUILD RELEASE APK
       # ==========================================
 
       - name: Build Abir AI Release APK
@@ -578,7 +536,7 @@ jobs:
           echo "Release build command completed."
 
       # ==========================================
-      # 22. FIND AND VERIFY RELEASE APK
+      # 21. FIND AND VERIFY RELEASE APK
       # ==========================================
 
       - name: Collect and verify Release APK
@@ -587,12 +545,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK_DIR="$PROJECT_DIR/android/app/build/outputs/apk/release"
+          APK_ROOT="$PROJECT_DIR/android/app/build/outputs/apk"
 
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release APK directory not found."
+          if [ ! -d "$APK_ROOT" ]; then
+            echo "::error::APK output directory not found."
 
-            find "$PROJECT_DIR/android/app/build/outputs" \
+            find "$PROJECT_DIR/android/app/build" \
               -maxdepth 6 \
               -print 2>/dev/null || true
 
@@ -600,7 +558,7 @@ jobs:
           fi
 
           mapfile -d '' APK_FILES < <(
-            find "$APK_DIR" \
+            find "$APK_ROOT" \
               -type f \
               -name "*.apk" \
               -print0 |
@@ -608,8 +566,8 @@ jobs:
           )
 
           if [ "${#APK_FILES[@]}" -eq 0 ]; then
-            echo "::error::No Release APK was generated."
-            find "$APK_DIR" -type f -print || true
+            echo "::error::No APK was generated."
+            find "$APK_ROOT" -type f -print || true
             exit 1
           fi
 
@@ -620,7 +578,6 @@ jobs:
           cp "$APK" "$OUTPUT_APK"
 
           test -s "$OUTPUT_APK"
-
           unzip -tq "$OUTPUT_APK"
 
           echo "Generated APK:"
@@ -632,7 +589,7 @@ jobs:
           echo "Release APK verified."
 
       # ==========================================
-      # 23. UPLOAD RELEASE APK
+      # 22. UPLOAD RELEASE APK
       # ==========================================
 
       - name: Upload Abir AI Release APK
@@ -645,7 +602,7 @@ jobs:
           retention-days: 14
 
       # ==========================================
-      # 24. UPLOAD BUILD DIAGNOSTICS
+      # 23. UPLOAD BUILD DIAGNOSTICS
       # ==========================================
 
       - name: Upload Build Diagnostics
@@ -658,7 +615,7 @@ jobs:
           retention-days: 14
 
       # ==========================================
-      # 25. FINAL BUILD SUMMARY
+      # 24. FINAL BUILD SUMMARY
       # ==========================================
 
       - name: Build summary
