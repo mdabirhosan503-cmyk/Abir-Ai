@@ -52,7 +52,10 @@ jobs:
 
       # 5. Setup Android SDK
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+        
 
       # 6. Install SDK, NDK and CMake
       - name: Install Android SDK packages
