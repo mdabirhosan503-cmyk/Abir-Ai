@@ -17,13 +17,10 @@ concurrency:
 env:
   SOURCE_ZIP: AbirAI-5.4.24-DAILY-OFFLINE-TOOLS-UPGRADE.zip
   RELEASE_TAG: abirai-5.4.24-source
-
-  ABIR_VERSION: "5.4.24"
   ANDROID_API: "35"
   ANDROID_BUILD_TOOLS: "35.0.0"
   ANDROID_NDK: "27.1.12297006"
   CMAKE_VERSION: "3.22.1"
-
   CI: "1"
   EXPO_NO_TELEMETRY: "1"
   NODE_OPTIONS: "--max-old-space-size=6144"
@@ -35,24 +32,22 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      # 1. Checkout workflow repository
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java
+      # 2. Java 17 - Gradle cache disabled because ZIP is extracted later
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
-      # 3. Node.js
+      # 3. Node.js - npm cache disabled because project is in ZIP
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
 
       # 4. pnpm
       - name: Setup pnpm
@@ -67,18 +62,14 @@ jobs:
         with:
           packages: "platform-tools"
 
-      # 6. Install Android build components
+      # 6. Android components
       - name: Install Android SDK components
         shell: bash
         run: |
           set -euo pipefail
 
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-              -type f -name sdkmanager -print -quit)"
-          fi
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
 
           test -x "$SDKMANAGER"
 
@@ -89,33 +80,24 @@ jobs:
             "ndk;${ANDROID_NDK}" \
             "cmake;${CMAKE_VERSION}"
 
-          echo "Android SDK components installed."
+          echo "Android SDK installation completed."
 
-      # 7. Verify tools
+      # 7. Verify environment
       - name: Verify build environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Java:"
           java -version
-
-          echo "Node:"
           node --version
-
-          echo "pnpm:"
           pnpm --version
-
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
-
           adb version
 
           mkdir -p "$GITHUB_WORKSPACE/build-diagnostics"
           mkdir -p "$GITHUB_WORKSPACE/release"
 
-      # 8. Download exact source ZIP from GitHub Release
-      - name: Download Abir AI 5.4.24 source ZIP
+      # 8. Download source ZIP
+      - name: Download Abir AI source ZIP
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -137,8 +119,6 @@ jobs:
           sha256sum "$ZIP" \
             | tee "$GITHUB_WORKSPACE/build-diagnostics/source-sha256.txt"
 
-          echo "Source ZIP verified."
-
       # 9. Extract source
       - name: Extract source ZIP
         shell: bash
@@ -151,116 +131,67 @@ jobs:
             "$GITHUB_WORKSPACE/source/$SOURCE_ZIP" \
             -d "$GITHUB_WORKSPACE/abir_extracted"
 
-          echo "Source ZIP extracted."
+          echo "ZIP extracted."
 
-      # 10. Detect the correct project root
-      - name: Detect canonical project root
+      # 10. Select actual project root
+      - name: Detect project root
         shell: bash
         run: |
           set -euo pipefail
 
-          EXTRACT="$GITHUB_WORKSPACE/abir_extracted"
-          ROOT=""
+          ROOT="$GITHUB_WORKSPACE/abir_extracted"
 
-          # The supplied ZIP identifies its top-level folder
-          # as the canonical project root.
-          if [ -f "$EXTRACT/PROJECT_ROOT_NOTICE.md" ] \
-            && [ -f "$EXTRACT/package.json" ] \
-            && [ -f "$EXTRACT/android/gradlew" ]; then
-
-            ROOT="$EXTRACT"
-
-          elif [ -f "$EXTRACT/package.json" ] \
-            && [ -f "$EXTRACT/android/gradlew" ] \
-            && [ -f "$EXTRACT/app.json" ]; then
-
-            ROOT="$EXTRACT"
-
-          else
-            while IFS= read -r -d '' PACKAGE; do
-              CANDIDATE="$(dirname "$PACKAGE")"
-
-              if [ -f "$CANDIDATE/android/gradlew" ] \
-                && [ -f "$CANDIDATE/app.json" ] \
-                && [ -f "$CANDIDATE/scripts/prepare-whisper.sh" ] \
-                && [ -f "$CANDIDATE/scripts/prepare-sherpa.sh" ]; then
-
-                ROOT="$CANDIDATE"
-                break
-              fi
-            done < <(
-              find "$EXTRACT" \
-                -type f \
-                -name package.json \
-                -not -path '*/node_modules/*' \
-                -print0
-            )
-          fi
-
-          if [ -z "$ROOT" ]; then
-            echo "ERROR: Canonical Android project root not found."
-            find "$EXTRACT" -maxdepth 3 -type f | head -200
-            exit 1
-          fi
+          test -f "$ROOT/package.json"
+          test -f "$ROOT/app.json"
+          test -f "$ROOT/android/gradlew"
 
           echo "PROJECT_PATH=$ROOT" >> "$GITHUB_ENV"
 
-          echo "Detected project root:"
+          echo "Using project root:"
           echo "$ROOT"
 
-      # 11. Verify project files
+      # 11. Verify project
       - name: Verify project files
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f "$PROJECT_PATH/package.json"
-          test -f "$PROJECT_PATH/app.json"
-          test -f "$PROJECT_PATH/android/gradlew"
-          test -f "$PROJECT_PATH/android/settings.gradle"
-          test -f "$PROJECT_PATH/android/app/build.gradle"
+          cd "$PROJECT_PATH"
 
-          test -f "$PROJECT_PATH/scripts/prepare-whisper.sh"
-          test -f "$PROJECT_PATH/scripts/prepare-sherpa.sh"
+          test -f package.json
+          test -f app.json
+          test -f pnpm-workspace.yaml
 
-          test -f "$PROJECT_PATH/pnpm-workspace.yaml"
+          test -f android/gradlew
+          test -f android/settings.gradle
+          test -f android/app/build.gradle
 
-          echo "All essential project files verified."
+          test -f scripts/prepare-whisper.sh
+          test -f scripts/prepare-sherpa.sh
 
-          if [ -f "$PROJECT_PATH/pnpm-lock.yaml" ]; then
+          if [ -f pnpm-lock.yaml ]; then
             echo "Existing pnpm lockfile found."
           else
-            echo "No pnpm-lock.yaml in ZIP."
-            echo "pnpm will generate a new lockfile during installation."
+            echo "No lockfile found; pnpm will generate one."
           fi
 
-          node --version
-          pnpm --version
-          java -version
+          echo "Project verification successful."
 
       # 12. Install dependencies
-      - name: Install project dependencies
+      - name: Install pnpm dependencies
         shell: bash
-        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
 
           cd "$PROJECT_PATH"
 
-          if [ -f pnpm-lock.yaml ]; then
-            echo "Installing using existing lockfile."
-            pnpm install --no-frozen-lockfile
-          else
-            echo "Generating a new pnpm lockfile."
-            pnpm install
-          fi
+          pnpm install
 
           test -d node_modules
-          test -f node_modules/.modules.yaml
 
           echo "Dependencies installed."
 
-      # 13. Verify Expo
+      # 13. Expo verification
       - name: Verify Expo configuration
         shell: bash
         run: |
@@ -275,10 +206,8 @@ jobs:
             --json \
             > "$GITHUB_WORKSPACE/build-diagnostics/expo-config.json"
 
-          echo "Expo configuration verified."
-
-      # 14. Prepare Whisper
-      - name: Prepare Whisper multilingual offline engine
+      # 14. Whisper setup
+      - name: Prepare Whisper offline engine
         shell: bash
         run: |
           set -euo pipefail
@@ -286,11 +215,9 @@ jobs:
           cd "$PROJECT_PATH"
 
           chmod +x scripts/prepare-whisper.sh
-
           bash scripts/prepare-whisper.sh
 
           WHISPER_CPP="modules/abir-app-launcher/android/src/main/cpp/whisper.cpp"
-
           WHISPER_MODEL="modules/abir-app-launcher/android/src/main/assets/models/ggml-tiny-q5_1.bin"
 
           test -s "$WHISPER_CPP/CMakeLists.txt"
@@ -298,8 +225,8 @@ jobs:
 
           echo "Whisper source and model verified."
 
-      # 15. Prepare Sherpa-ONNX
-      - name: Prepare Bengali Sherpa ONNX offline engine
+      # 15. Sherpa Bengali setup
+      - name: Prepare Sherpa Bengali offline engine
         shell: bash
         run: |
           set -euo pipefail
@@ -307,53 +234,49 @@ jobs:
           cd "$PROJECT_PATH"
 
           chmod +x scripts/prepare-sherpa.sh
-
           bash scripts/prepare-sherpa.sh
 
           MODEL_DIR="modules/abir-app-launcher/android/src/main/assets/models/sherpa-bn"
 
-          test -s "$MODEL_DIR/encoder.onnx"
-          test -s "$MODEL_DIR/decoder.onnx"
-          test -s "$MODEL_DIR/joiner.onnx"
-          test -s "$MODEL_DIR/tokens.txt"
-          test -s "$MODEL_DIR/bpe.model"
-          test -s "$MODEL_DIR/unigram_500.vocab"
-          test -s "$MODEL_DIR/opt.py"
+          for FILE in \
+            encoder.onnx \
+            decoder.onnx \
+            joiner.onnx \
+            tokens.txt \
+            bpe.model \
+            unigram_500.vocab \
+            opt.py \
+            SHA256SUMS.txt
+          do
+            test -s "$MODEL_DIR/$FILE"
+          done
 
-          echo "Bengali Sherpa model files verified."
+          echo "Sherpa Bengali model verified."
 
       # 16. Verify native libraries
-      - name: Verify offline voice native libraries
+      - name: Verify voice native libraries
         shell: bash
         run: |
           set -euo pipefail
 
           JNI_DIR="$PROJECT_PATH/modules/abir-app-launcher/android/src/main/jniLibs"
 
-          test -d "$JNI_DIR"
-
-          FOUND_ABI=0
+          FOUND=0
 
           for ABI in arm64-v8a armeabi-v7a x86_64 x86; do
             if [ -s "$JNI_DIR/$ABI/libsherpa-onnx-jni.so" ] \
               && [ -s "$JNI_DIR/$ABI/libonnxruntime.so" ]; then
-
-              echo "Verified Sherpa libraries for $ABI"
-              FOUND_ABI=$((FOUND_ABI + 1))
+              echo "Verified ABI: $ABI"
+              FOUND=$((FOUND + 1))
             fi
           done
 
-          if [ "$FOUND_ABI" -eq 0 ]; then
-            echo "ERROR: Sherpa native libraries not found."
-            exit 1
-          fi
+          test "$FOUND" -gt 0
 
           test -s "$PROJECT_PATH/modules/abir-app-launcher/android/src/main/cpp/whisper_native/CMakeLists.txt"
 
-          echo "Native voice components verified."
-
       # 17. Configure Gradle
-      - name: Configure Android Gradle
+      - name: Configure Gradle
         shell: bash
         run: |
           set -euo pipefail
@@ -364,24 +287,10 @@ jobs:
 
           printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
 
-          touch gradle.properties
-
-          if ! grep -q '^org.gradle.jvmargs=' gradle.properties; then
-            echo 'org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=1g' >> gradle.properties
-          fi
-
-          if ! grep -q '^org.gradle.parallel=' gradle.properties; then
-            echo 'org.gradle.parallel=true' >> gradle.properties
-          fi
-
-          if ! grep -q '^org.gradle.daemon=' gradle.properties; then
-            echo 'org.gradle.daemon=false' >> gradle.properties
-          fi
-
-          echo "Gradle configured."
+          echo "Gradle configuration completed."
 
       # 18. Gradle preflight
-      - name: Gradle preflight check
+      - name: Gradle preflight
         shell: bash
         run: |
           set -euo pipefail
@@ -400,19 +309,13 @@ jobs:
             --console=plain \
             2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-help.log"
 
-      # 19. Build APK
+      # 19. Build release APK
       - name: Build Abir AI Release APK
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_PATH/android"
-
-          ./gradlew clean \
-            --no-daemon \
-            --stacktrace \
-            --console=plain \
-            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-clean.log"
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
@@ -421,10 +324,8 @@ jobs:
             --console=plain \
             2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-release-build.log"
 
-          echo "Release APK build completed."
-
       # 20. Collect APK
-      - name: Collect and verify APK
+      - name: Collect release APK
         shell: bash
         run: |
           set -euo pipefail
@@ -435,35 +336,27 @@ jobs:
             -type f \
             -name '*.apk' \
             -path '*/release/*' \
-            -print \
-            | sort \
-            | tail -n 1)"
+            -print | sort | tail -n 1)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Release APK not found."
+            echo "Release APK not found."
             find "$PROJECT_PATH/android/app/build/outputs" \
               -type f -name '*.apk' || true
             exit 1
           fi
-
-          mkdir -p "$GITHUB_WORKSPACE/release"
 
           cp "$APK" \
             "$GITHUB_WORKSPACE/release/AbirAI-5.4.24-release.apk"
 
           test -s "$GITHUB_WORKSPACE/release/AbirAI-5.4.24-release.apk"
 
-          unzip -tq \
-            "$GITHUB_WORKSPACE/release/AbirAI-5.4.24-release.apk"
+          unzip -tq "$GITHUB_WORKSPACE/release/AbirAI-5.4.24-release.apk"
 
-          sha256sum \
-            "$GITHUB_WORKSPACE/release/AbirAI-5.4.24-release.apk" \
+          sha256sum "$GITHUB_WORKSPACE/release/AbirAI-5.4.24-release.apk" \
             | tee "$GITHUB_WORKSPACE/build-diagnostics/apk-sha256.txt"
 
-          echo "APK collected and verified."
-
       # 21. Upload APK
-      - name: Upload Abir AI APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: AbirAI-5.4.24-Release-APK
@@ -481,13 +374,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # 23. Final status
-      - name: Build result
+      # 23. Success
+      - name: Build success
         if: success()
-        shell: bash
         run: |
-          echo "======================================"
-          echo "ABIR AI 5.4.24 BUILD SUCCESSFUL"
-          echo "Release APK is available in Artifacts."
-          echo "======================================"
-          
+          echo "Abir AI 5.4.24 APK build successful."
+          echo "Download the APK from GitHub Actions Artifacts."
