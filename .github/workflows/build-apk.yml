@@ -1,3 +1,4 @@
+
 name: Build Abir AI 5.4.24 Dual Offline Voice APK
 
 on:
@@ -24,7 +25,7 @@ jobs:
       RELEASE_TAG: abirai-5.4.24-source
       ANDROID_API: "35"
       ANDROID_BUILD_TOOLS: "35.0.0"
-      ANDROID_NDK: 27.1.12297006
+      ANDROID_NDK: "27.1.12297006"
 
     steps:
 
@@ -32,14 +33,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Node
+      # 3. Node.js 20
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -52,13 +53,13 @@ jobs:
           version: 10.12.4
 
       # 5. Android SDK
+      # Do not install deprecated SDK package "tools".
       - name: Setup Android SDK
-      uses: android-actions/setup-android@v4
-      with:
-      packages: 'platform-tools'
-        
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
 
-      # 6. Install Android packages
+      # 6. Install Android SDK, NDK and CMake
       - name: Install Android SDK and NDK
         shell: bash
         run: |
@@ -71,10 +72,27 @@ jobs:
             "ndk;${ANDROID_NDK}" \
             "cmake;3.22.1"
 
-          yes | sdkmanager --licenses || true
+          echo "Android SDK packages installed."
 
-      # 7. Download source ZIP from Release
-      - name: Download source ZIP
+          sdkmanager --list_installed
+
+      # 7. Verify Android SDK
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          command -v sdkmanager
+          command -v adb
+
+          sdkmanager --version
+          adb version
+
+      # 8. Download source ZIP from GitHub Release
+      - name: Download Abir AI source ZIP
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,13 +108,14 @@ jobs:
 
           test -s "abir_build/$SOURCE_ZIP"
 
-          echo "Source ZIP downloaded:"
+          echo "Source ZIP downloaded successfully."
+
           ls -lh "abir_build/$SOURCE_ZIP"
 
           sha256sum "abir_build/$SOURCE_ZIP"
 
-      # 8. Extract source
-      - name: Extract Abir AI
+      # 9. Extract source ZIP
+      - name: Extract Abir AI source
         shell: bash
         run: |
           set -euo pipefail
@@ -108,7 +127,12 @@ jobs:
 
           echo "ZIP extraction completed."
 
-      # 9. Locate correct project root
+          find abir_extracted \
+            -maxdepth 3 \
+            -type f \
+            -name package.json
+
+      # 10. Locate project root
       - name: Locate Abir AI project
         shell: bash
         run: |
@@ -116,32 +140,41 @@ jobs:
 
           FOUND=""
 
-          for ROOT in \
-            "$GITHUB_WORKSPACE/abir_extracted" \
-            "$GITHUB_WORKSPACE/abir_extracted/abir_work"
-          do
-            if [ -f "$ROOT/package.json" ] && \
-               [ -f "$ROOT/android/gradlew" ] && \
+          while IFS= read -r -d '' PACKAGE_FILE; do
+
+            ROOT="$(dirname "$PACKAGE_FILE")"
+
+            if [ -f "$ROOT/android/gradlew" ] && \
                [ -f "$ROOT/scripts/prepare-whisper.sh" ] && \
                [ -f "$ROOT/scripts/prepare-sherpa.sh" ]; then
+
               FOUND="$ROOT"
               break
+
             fi
-          done
+
+          done < <(
+            find "$GITHUB_WORKSPACE/abir_extracted" \
+              -type f \
+              -name package.json \
+              -print0
+          )
 
           if [ -z "$FOUND" ]; then
             echo "::error::Abir AI project root not found."
 
-            find abir_extracted -maxdepth 4 -type f | head -200
+            find abir_extracted \
+              -maxdepth 5 \
+              -type f | head -200
 
             exit 1
           fi
 
           echo "PROJECT_PATH=$FOUND" >> "$GITHUB_ENV"
 
-          echo "Project found: $FOUND"
+          echo "Abir AI project found: $FOUND"
 
-      # 10. Verify project
+      # 11. Verify project files
       - name: Verify project files
         working-directory: ${{ github.workspace }}/abir_extracted
         shell: bash
@@ -149,18 +182,20 @@ jobs:
           set -euo pipefail
 
           test -f "$PROJECT_PATH/package.json"
+          test -f "$PROJECT_PATH/pnpm-lock.yaml"
           test -f "$PROJECT_PATH/android/gradlew"
+
           test -f "$PROJECT_PATH/scripts/prepare-whisper.sh"
           test -f "$PROJECT_PATH/scripts/prepare-sherpa.sh"
 
-          echo "Abir AI project verified."
+          echo "All required project files verified."
 
           node --version
           pnpm --version
           java -version
 
-      # 11. Install dependencies
-      - name: Install dependencies
+      # 12. Install dependencies
+      - name: Install project dependencies
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
         run: |
@@ -168,10 +203,10 @@ jobs:
 
           pnpm install --no-frozen-lockfile
 
-          echo "Dependencies installed."
+          echo "Dependencies installed successfully."
 
-      # 12. Check Expo
-      - name: Check Expo configuration
+      # 13. Check Expo
+      - name: Verify Expo configuration
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
         run: |
@@ -179,8 +214,10 @@ jobs:
 
           pnpm exec expo config --type public
 
-      # 13. Verify Bengali model
-      - name: Verify all seven Bengali model files
+          echo "Expo configuration verified."
+
+      # 14. Verify all seven Bengali model files
+      - name: Verify seven Bengali model files
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
         run: |
@@ -197,16 +234,20 @@ jobs:
             unigram_500.vocab.txt \
             opt.py
           do
+
             if [ ! -s "$MODEL_DIR/$FILE" ]; then
-              echo "::error::Missing model file: $FILE"
+              echo "::error::Missing Bengali model file: $FILE"
               exit 1
             fi
 
-            echo "OK: $FILE"
+            echo "VERIFIED: $FILE"
+
           done
 
-      # 14. Prepare Whisper multilingual
-      - name: Prepare Whisper Bengali English
+          echo "All seven Bengali model files verified."
+
+      # 15. Prepare Whisper multilingual
+      - name: Prepare Whisper Bengali and English
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
         run: |
@@ -216,9 +257,9 @@ jobs:
 
           ./scripts/prepare-whisper.sh
 
-          echo "Whisper multilingual prepared."
+          echo "Whisper preparation completed."
 
-      # 15. Prepare Sherpa Bengali
+      # 16. Prepare Sherpa Bengali
       - name: Prepare Sherpa Bengali
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
@@ -229,9 +270,9 @@ jobs:
 
           ./scripts/prepare-sherpa.sh
 
-          echo "Sherpa Bengali prepared."
+          echo "Sherpa preparation completed."
 
-      # 16. Verify native Whisper sources
+      # 17. Verify Whisper native sources and model
       - name: Verify Whisper native sources
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
@@ -246,7 +287,7 @@ jobs:
 
           echo "Whisper native sources and model verified."
 
-      # 17. Verify Sherpa runtime
+      # 18. Verify Sherpa native runtime
       - name: Verify Sherpa runtime
         working-directory: ${{ env.PROJECT_PATH }}
         shell: bash
@@ -255,16 +296,25 @@ jobs:
 
           JNI_DIR="modules/abir-app-launcher/android/src/main/jniLibs"
 
-          find "$JNI_DIR" -type f -name 'libsherpa-onnx-jni.so' \
+          if [ ! -d "$JNI_DIR" ]; then
+            echo "::error::Sherpa JNI directory missing."
+            exit 1
+          fi
+
+          find "$JNI_DIR" \
+            -type f \
+            -name 'libsherpa-onnx-jni.so' \
             -print -quit | grep -q .
 
-          find "$JNI_DIR" -type f -name 'libonnxruntime.so' \
+          find "$JNI_DIR" \
+            -type f \
+            -name 'libonnxruntime.so' \
             -print -quit | grep -q .
 
-          echo "Sherpa runtime verified."
+          echo "Sherpa native runtime verified."
 
-      # 18. Check Android project
-      - name: Check Android project
+      # 19. Verify Android Gradle
+      - name: Verify Android Gradle
         working-directory: ${{ env.PROJECT_PATH }}/android
         shell: bash
         run: |
@@ -274,7 +324,9 @@ jobs:
 
           ./gradlew --version
 
-      # 19. Build Release APK
+          echo "Gradle verification completed."
+
+      # 20. Build Release APK
       - name: Build Abir AI Release APK
         working-directory: ${{ env.PROJECT_PATH }}/android
         shell: bash
@@ -283,10 +335,14 @@ jobs:
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$GITHUB_WORKSPACE/abir-build.log"
 
-      # 20. Find APK
-      - name: Locate APK
+          echo "Release build completed."
+
+      # 21. Locate and verify APK
+      - name: Locate Release APK
         if: success()
         shell: bash
         run: |
@@ -296,22 +352,37 @@ jobs:
 
           mkdir -p release-apk
 
-          APK_PATH="$(find "$APK_DIR" -type f \
-            -name '*release*.apk' | head -n 1)"
+          if [ ! -d "$APK_DIR" ]; then
+            echo "::error::APK output directory not found."
+            exit 1
+          fi
+
+          APK_PATH="$(find "$APK_DIR" \
+            -type f \
+            -name '*release*.apk' \
+            | sort | head -n 1)"
 
           if [ -z "$APK_PATH" ]; then
             echo "::error::Release APK not found."
+
             find "$APK_DIR" -type f || true
+
             exit 1
           fi
+
+          test -s "$APK_PATH"
 
           cp "$APK_PATH" \
             release-apk/AbirAI-5.4.24-release.apk
 
+          echo "APK successfully located."
+
           ls -lh release-apk/
 
-      # 21. Upload APK
-      - name: Upload Release APK
+          sha256sum release-apk/AbirAI-5.4.24-release.apk
+
+      # 22. Upload APK
+      - name: Upload Abir AI Release APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -320,14 +391,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # 22. Upload diagnostics
+      # 23. Upload build log
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: AbirAI-5.4.24-Build-Logs
-          path: |
-            abir_build/
-            abir_extracted/
+          path: abir-build.log
           if-no-files-found: ignore
           retention-days: 7
+
+      # 24. Final status
+      - name: Build completion status
+        if: success()
+        shell: bash
+        run: |
+          echo "===================================="
+          echo "ABIR AI 5.4.24 BUILD SUCCESSFUL"
+          echo "===================================="
+          echo "Dual Offline Voice build completed."
