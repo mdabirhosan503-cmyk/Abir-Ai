@@ -94,10 +94,12 @@ jobs:
         with:
           version: 10.12.4
           run_install: false
-
+      
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
+        with:
+          packages: 'platform-tools'
+        
       - name: Install Android components
         run: |
           set -euo pipefail
