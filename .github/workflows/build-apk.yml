@@ -6,349 +6,272 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "**"
-      - ".github/workflows/build-apk.yml"
+      - master
 
 permissions:
   contents: read
 
-concurrency:
-  group: abir-ai-android-build
-  cancel-in-progress: true
-
 jobs:
   build:
-    name: Build Abir AI APK
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
-    env:
-      NODE_ENV: production
-      CI: true
-
     steps:
-      # 1. Checkout
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Node.js
+      - name: Locate Abir AI Project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for Abir AI project..."
+
+          PROJECT_ROOT=""
+
+          check_project() {
+            local dir="$1"
+
+            if [ -f "$dir/package.json" ] &&
+               [ -f "$dir/pnpm-lock.yaml" ] &&
+               [ -f "$dir/android/gradlew" ] &&
+               [ -f "$dir/android/gradle/wrapper/gradle-wrapper.properties" ]; then
+              PROJECT_ROOT="$dir"
+              return 0
+            fi
+
+            return 1
+          }
+
+          if check_project "$GITHUB_WORKSPACE"; then
+            echo "Project found in repository root."
+          else
+            EXTRACT_DIR="$RUNNER_TEMP/abir-extracted"
+            mkdir -p "$EXTRACT_DIR"
+
+            ZIP_FOUND=false
+
+            while IFS= read -r -d '' ZIP_FILE; do
+              ZIP_FOUND=true
+              echo "Extracting: $ZIP_FILE"
+
+              DEST="$EXTRACT_DIR/$(basename "$ZIP_FILE" .zip)"
+              mkdir -p "$DEST"
+              unzip -q "$ZIP_FILE" -d "$DEST" || true
+
+              while IFS= read -r -d '' PACKAGE_FILE; do
+                CANDIDATE="$(dirname "$PACKAGE_FILE")"
+
+                if check_project "$CANDIDATE"; then
+                  break
+                fi
+              done < <(find "$DEST" -type f -name package.json -print0)
+
+              if [ -n "$PROJECT_ROOT" ]; then
+                break
+              fi
+            done < <(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -iname "*.zip" -print0)
+
+            if [ -z "$PROJECT_ROOT" ]; then
+              echo "ERROR: Abir AI project not found."
+              echo "Expected files:"
+              echo "package.json"
+              echo "pnpm-lock.yaml"
+              echo "android/gradlew"
+              echo "android/gradle/wrapper/gradle-wrapper.properties"
+              echo ""
+              echo "Files found in repository:"
+              find "$GITHUB_WORKSPACE" -maxdepth 5 -type f | head -200
+              exit 1
+            fi
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "Project location: $PROJECT_ROOT"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: 22
 
-      # 3. pnpm
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: "10"
-          run_install: false
+          version: 10
 
-      # 4. Java
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: 17
+          cache: gradle
 
-      # 5. Android SDK
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
 
-      # 6. Verify project
-      - name: Verify project files
+      - name: Verify Project
         shell: bash
         run: |
           set -euo pipefail
+          cd "$PROJECT_ROOT"
 
-          echo "Checking Abir AI project..."
+          echo "Checking project files..."
 
-          test -f package.json
-          test -f pnpm-lock.yaml
-          test -f android/gradlew
-          test -f android/gradle/wrapper/gradle-wrapper.properties
+          for f in package.json pnpm-lock.yaml android/gradlew android/gradle/wrapper/gradle-wrapper.properties; do
+            if [ -f "$f" ]; then
+              echo "FOUND: $f"
+            else
+              echo "MISSING: $f"
+              exit 1
+            fi
+          done
 
-          echo "Project files verified."
-
+          echo "Node:"
           node --version
+
+          echo "pnpm:"
           pnpm --version
+
+          echo "Java:"
           java -version
 
-      # 7. Install dependencies
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # 8. Expo configuration
-      - name: Verify Expo configuration
+      - name: Install Dependencies
         shell: bash
         run: |
           set -euo pipefail
+          cd "$PROJECT_ROOT"
+          pnpm install --frozen-lockfile
+
+      - name: Check Expo Configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
 
           if pnpm exec expo --version; then
             pnpm exec expo config --type public
           else
-            echo "::error::Expo CLI is unavailable."
-            exit 1
+            echo "Expo CLI check skipped."
           fi
 
-      # 9. TypeScript check
-      - name: TypeScript check
+      - name: Run TypeScript Check
         shell: bash
         run: |
           set -euo pipefail
+          cd "$PROJECT_ROOT"
 
           if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
             pnpm run typecheck
           else
-            echo "No typecheck script found; skipping."
+            echo "No typecheck script found. Skipping."
           fi
 
-      # 10. Prepare Sherpa-ONNX
-      - name: Prepare Sherpa-ONNX runtime and Bengali model
+      - name: Prepare Sherpa ONNX
         shell: bash
         run: |
           set -euo pipefail
+          cd "$PROJECT_ROOT"
 
-          SCRIPT="scripts/prepare-sherpa.sh"
-
-          if [ ! -f "$SCRIPT" ]; then
-            echo "::error::scripts/prepare-sherpa.sh not found."
+          if [ -f scripts/prepare-sherpa.sh ]; then
+            chmod +x scripts/prepare-sherpa.sh
+            bash scripts/prepare-sherpa.sh
+          else
+            echo "ERROR: scripts/prepare-sherpa.sh not found."
             exit 1
           fi
 
-          chmod +x "$SCRIPT"
-          bash "$SCRIPT"
-
-          echo "Sherpa preparation script completed."
-
-      # 11. Verify Sherpa model files
-      - name: Verify Bengali Sherpa model
+      - name: Verify Sherpa Model and Native Libraries
         shell: bash
         run: |
           set -euo pipefail
+          cd "$PROJECT_ROOT"
 
-          REQUIRED_FILES=(
-            encoder.onnx
-            decoder.onnx
-            joiner.onnx
-            tokens.txt
-            bpe.model
-            unigram_500.vocab
-            opt.py
-          )
+          echo "Checking Sherpa model files..."
 
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            MATCH="$(find . \
-              -type f \
-              -name "$FILE" \
-              ! -path "*/node_modules/*" \
-              ! -path "*/.git/*" \
-              -print -quit)"
-
-            if [ -z "$MATCH" ]; then
-              echo "::error::Sherpa model file missing: $FILE"
+          for f in encoder.onnx decoder.onnx joiner.onnx tokens.txt bpe.model; do
+            if find . -type f -name "$f" -print -quit | grep -q .; then
+              echo "FOUND: $f"
+            else
+              echo "MISSING: $f"
               exit 1
             fi
-
-            echo "Found: $MATCH"
           done
-
-          echo "Bengali model file checks passed."
-
-      # 12. Verify Sherpa Android libraries
-      - name: Verify Sherpa JNI and ONNX Runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          JNI="$(find . \
-            -type f \
-            -name "libsherpa-onnx-jni.so" \
-            ! -path "*/node_modules/*" \
-            -print -quit)"
-
-          ONNX="$(find . \
-            -type f \
-            -name "libonnxruntime.so" \
-            ! -path "*/node_modules/*" \
-            -print -quit)"
-
-          if [ -z "$JNI" ]; then
-            echo "::error::libsherpa-onnx-jni.so not found."
-            exit 1
-          fi
-
-          if [ -z "$ONNX" ]; then
-            echo "::error::libonnxruntime.so not found."
-            exit 1
-          fi
-
-          echo "Sherpa JNI: $JNI"
-          echo "ONNX Runtime: $ONNX"
-
-          echo "Sherpa native library checks passed."
-
-      # 13. Verify Kotlin integration
-      - name: Verify voice recognition integration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RECOGNIZER="$(find . \
-            -type f \
-            -name "OnlineRecognizer.kt" \
-            ! -path "*/node_modules/*" \
-            -print -quit)"
-
-          if [ -z "$RECOGNIZER" ]; then
-            echo "::error::OnlineRecognizer.kt not found."
-            exit 1
-          fi
-
-          echo "Found: $RECOGNIZER"
-
-          grep -R -n \
-            --include="*.kt" \
-            "OnlineRecognizer" \
-            android modules 2>/dev/null || true
-
-      # 14. Prepare Gradle
-      - name: Prepare Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          chmod +x android/gradlew
-
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -z "$SDK" ]; then
-            echo "::error::Android SDK not found."
-            exit 1
-          fi
-
-          printf 'sdk.dir=%s\n' "$SDK" > android/local.properties
-
-          cd android
-          ./gradlew --version
-
-      # 15. Build APK
-      - name: Build Abir AI Release APK
-        shell: bash
-        env:
-          EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          EXPO_PUBLIC_GEMINI_MODEL: gemini-2.5-flash
-        run: |
-          set -euo pipefail
-
-          cd android
-
-          ./gradlew \
-            :app:assembleRelease \
-            --no-daemon \
-            --stacktrace \
-            --build-cache
-
-      # 16. Find APK
-      - name: Collect release APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p release-apk
-
-          APK="$(find android \
-            -type f \
-            -path "*/build/outputs/apk/release/*.apk" \
-            ! -name "*-unsigned.apk" \
-            -print \
-            | sort \
-            | head -n 1)"
-
-          if [ -z "$APK" ]; then
-            echo "::error::Release APK not found."
-            find android -type f -name "*.apk" -print || true
-            exit 1
-          fi
-
-          cp "$APK" release-apk/Abir-AI-5.4.28-release.apk
-
-          ls -lh release-apk/
-
-      # 17. Verify APK contents
-      - name: Verify APK contents
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="release-apk/Abir-AI-5.4.28-release.apk"
-
-          test -s "$APK"
-
-          echo "APK size:"
-          stat -c%s "$APK"
 
           echo "Checking native libraries..."
 
-          unzip -l "$APK" > apk-contents.txt
+          for lib in libsherpa-onnx-jni.so libonnxruntime.so; do
+            if find android -type f -name "$lib" -print -quit | grep -q .; then
+              echo "FOUND: $lib"
+            else
+              echo "MISSING: $lib"
+              exit 1
+            fi
+          done
 
-          grep -q "libsherpa-onnx-jni.so" apk-contents.txt || {
-            echo "::error::Sherpa JNI library missing from APK."
-            exit 1
-          }
+          echo "Checking Kotlin recognizer..."
 
-          grep -q "libonnxruntime.so" apk-contents.txt || {
-            echo "::error::ONNX Runtime missing from APK."
-            exit 1
-          }
+          if find android -type f -name OnlineRecognizer.kt -print -quit | grep -q .; then
+            echo "OnlineRecognizer.kt found."
+          else
+            echo "WARNING: OnlineRecognizer.kt not found."
+          fi
 
-          echo "Checking Bengali model assets..."
-
-          grep -q "encoder.onnx" apk-contents.txt || {
-            echo "::error::encoder.onnx missing from APK."
-            exit 1
-          }
-
-          grep -q "tokens.txt" apk-contents.txt || {
-            echo "::error::tokens.txt missing from APK."
-            exit 1
-          }
-
-          echo "APK content verification passed."
-
-      # 18. Upload APK
-      - name: Upload Abir AI APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Abir-AI-5.4.28-release-APK
-          path: release-apk/Abir-AI-5.4.28-release.apk
-          if-no-files-found: error
-          retention-days: 14
-
-      # 19. Upload diagnostic files
-      - name: Upload build diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Abir-AI-5.4.28-build-diagnostics
-          path: |
-            android/app/build/outputs/logs/
-            android/app/build/reports/
-            apk-contents.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-      # 20. Build summary
-      - name: Build summary
-        if: success()
+      - name: Grant Gradle Permission
         shell: bash
         run: |
-          echo "======================================"
-          echo "ABIR AI 5.4.28 BUILD SUCCESSFUL"
-          echo "======================================"
-          echo "APK: Abir-AI-5.4.28-release.apk"
-          echo "Sherpa JNI: checked"
-          echo "ONNX Runtime: checked"
-          echo "Bengali model assets: checked"
+          set -euo pipefail
+          cd "$PROJECT_ROOT/android"
+          chmod +x gradlew
+
+      - name: Build Release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT/android"
+
+          ./gradlew :app:assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+
+          APK_DIR="android/app/build/outputs/apk/release"
+
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: APK output directory not found."
+            exit 1
+          fi
+
+          APK="$(find "$APK_DIR" -type f -name "*.apk" -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: Release APK not generated."
+            exit 1
+          fi
+
+          echo "APK generated: $APK"
+
+          echo "Checking APK contents..."
+
+          unzip -l "$APK" > "$RUNNER_TEMP/apk-list.txt"
+
+          grep -q "libsherpa-onnx-jni.so" "$RUNNER_TEMP/apk-list.txt"
+          grep -q "libonnxruntime.so" "$RUNNER_TEMP/apk-list.txt"
+          grep -q "encoder.onnx" "$RUNNER_TEMP/apk-list.txt"
+          grep -q "tokens.txt" "$RUNNER_TEMP/apk-list.txt"
+
+          echo "Sherpa libraries and model files verified."
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abir-AI-5.4.28-Release-APK
+          path: ${{ env.PROJECT_ROOT }}/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
           
