@@ -1,5 +1,4 @@
-
-name: Build Abir AI 5.4.28
+name: Build Abir AI 5.4.28 Character Voice Upgrade
 
 on:
   workflow_dispatch:
@@ -11,16 +10,22 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: abir-ai-android-build
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build Abir AI APK
+    name: Build Abir AI Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
+      # 1. Checkout repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 2. Download latest Abir AI source ZIP
       - name: Download Abir AI Source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -32,13 +37,20 @@ jobs:
 
           gh release download v5.4.28-source \
             --repo "$GITHUB_REPOSITORY" \
-            --pattern "AbirAI-5.4.28-BN-EN-BANGLISH-VOICE-UPDATED.zip" \
+            --pattern "AbirAI-5.4.28-CHARACTER-VOICE-UPGRADE.zip" \
             --dir "$RUNNER_TEMP/abir-source"
 
-          test -f "$RUNNER_TEMP/abir-source/AbirAI-5.4.28-BN-EN-BANGLISH-VOICE-UPDATED.zip"
+          ZIP="$RUNNER_TEMP/abir-source/AbirAI-5.4.28-CHARACTER-VOICE-UPGRADE.zip"
+
+          if [ ! -s "$ZIP" ]; then
+            echo "ERROR: Abir AI source ZIP not found."
+            exit 1
+          fi
 
           echo "Source ZIP downloaded successfully."
+          ls -lh "$ZIP"
 
+      # 3. Extract source and locate Android project
       - name: Extract and Locate Project
         shell: bash
         run: |
@@ -48,7 +60,7 @@ jobs:
           mkdir -p "$EXTRACT_DIR"
 
           unzip -q \
-            "$RUNNER_TEMP/abir-source/AbirAI-5.4.28-BN-EN-BANGLISH-VOICE-UPDATED.zip" \
+            "$RUNNER_TEMP/abir-source/AbirAI-5.4.28-CHARACTER-VOICE-UPGRADE.zip" \
             -d "$EXTRACT_DIR"
 
           PROJECT_ROOT=""
@@ -58,8 +70,11 @@ jobs:
 
             if [ -f "$CANDIDATE/android/gradlew" ] &&
                [ -f "$CANDIDATE/android/gradle/wrapper/gradle-wrapper.properties" ]; then
-              PROJECT_ROOT="$CANDIDATE"
-              break
+
+              if [ -z "$PROJECT_ROOT" ] ||
+                 [ "${#CANDIDATE}" -lt "${#PROJECT_ROOT}" ]; then
+                PROJECT_ROOT="$CANDIDATE"
+              fi
             fi
           done < <(find "$EXTRACT_DIR" -type f -name package.json -print0)
 
@@ -71,34 +86,40 @@ jobs:
 
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
-          echo "Project found: $PROJECT_ROOT"
+          echo "Abir AI project found:"
+          echo "$PROJECT_ROOT"
 
           cd "$PROJECT_ROOT"
           ls -la
 
+      # 4. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      # 5. Setup pnpm
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 10
-      
+
+      # 6. Setup Java
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-                                 
+
+      # 7. Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
           accept-android-sdk-licenses: true
-                  
-      - name: Verify Project
+
+      # 8. Verify project files
+      - name: Verify Abir AI Project
         shell: bash
         run: |
           set -euo pipefail
@@ -107,21 +128,22 @@ jobs:
           test -f package.json
           test -f android/gradlew
           test -f android/gradle/wrapper/gradle-wrapper.properties
+          test -f android/app/build.gradle
 
-          echo "Project files verified."
+          echo "All required project files found."
 
           node --version
           pnpm --version
           java -version
 
-          echo "Checking package manager files..."
-
           if [ -f pnpm-lock.yaml ]; then
             echo "pnpm lockfile found."
           else
-            echo "No pnpm lockfile. Will install without frozen lockfile."
+            echo "WARNING: pnpm-lock.yaml is missing."
+            echo "Dependencies will be installed without frozen lockfile."
           fi
 
+      # 9. Install JavaScript dependencies
       - name: Install Dependencies
         shell: bash
         run: |
@@ -134,18 +156,23 @@ jobs:
             pnpm install --no-frozen-lockfile
           fi
 
+      # 10. Verify Expo configuration
       - name: Check Expo Configuration
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_ROOT"
 
-          if [ -f app.json ] || [ -f app.config.js ] || [ -f app.config.ts ]; then
+          if [ -f app.json ] ||
+             [ -f app.config.js ] ||
+             [ -f app.config.ts ]; then
+
             pnpm exec expo config --type public
           else
-            echo "Expo configuration file not found. Skipping."
+            echo "Expo configuration not found. Skipping."
           fi
 
+      # 11. TypeScript check
       - name: TypeScript Check
         shell: bash
         run: |
@@ -154,10 +181,14 @@ jobs:
 
           if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
             pnpm run typecheck
+          elif [ -x node_modules/.bin/tsc ]; then
+            pnpm exec tsc --noEmit
           else
-            echo "No typecheck script. Skipping."
+            echo "WARNING: TypeScript checker not available."
+            echo "Continuing to Android build."
           fi
 
+      # 12. Prepare Sherpa ONNX
       - name: Prepare Sherpa ONNX
         shell: bash
         run: |
@@ -168,32 +199,38 @@ jobs:
             chmod +x scripts/prepare-sherpa.sh
             bash scripts/prepare-sherpa.sh
           else
-            echo "WARNING: Sherpa preparation script not found."
-            echo "Continuing with the libraries already included in the source."
+            echo "Sherpa preparation script not found."
+            echo "Using libraries already included in source."
           fi
 
-      - name: Check Sherpa Files
+      # 13. Check voice engine files
+      - name: Check Voice Engine Files
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_ROOT"
 
+          echo "Checking Sherpa native libraries..."
+
           for lib in libsherpa-onnx-jni.so libonnxruntime.so; do
             if find android -type f -name "$lib" -print -quit | grep -q .; then
               echo "FOUND: $lib"
             else
-              echo "WARNING: $lib not found in Android source."
+              echo "WARNING: $lib not found."
             fi
           done
+
+          echo "Checking offline voice models..."
 
           for model in encoder.onnx decoder.onnx joiner.onnx tokens.txt; do
             if find . -type f -name "$model" -print -quit | grep -q .; then
               echo "FOUND: $model"
             else
-              echo "WARNING: $model not found in source."
+              echo "WARNING: $model not found."
             fi
           done
 
+      # 14. Build release APK
       - name: Build Release APK
         shell: bash
         run: |
@@ -206,6 +243,7 @@ jobs:
             --no-daemon \
             --stacktrace
 
+      # 15. Find APK
       - name: Find and Verify APK
         shell: bash
         run: |
@@ -231,11 +269,11 @@ jobs:
 
           echo "APK_PATH=$PROJECT_ROOT/$APK" >> "$GITHUB_ENV"
 
-      - name: Upload APK
+      # 16. Upload APK artifact
+      - name: Upload Abir AI APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.4.28-Release-APK
+          name: Abir-AI-5.4.28-Character-Voice-APK
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 14
-          
