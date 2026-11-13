@@ -30,7 +30,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Download correct source ZIP
+      # 2. Download source ZIP
       - name: Download Abir AI Source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -40,10 +40,6 @@ jobs:
 
           mkdir -p "$RUNNER_TEMP/abir-source"
 
-          echo "Downloading Abir AI source..."
-          echo "Release: $ABIR_RELEASE_TAG"
-          echo "File: $ABIR_SOURCE_ZIP"
-
           gh release download "$ABIR_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$ABIR_SOURCE_ZIP" \
@@ -52,11 +48,11 @@ jobs:
           ZIP="$RUNNER_TEMP/abir-source/$ABIR_SOURCE_ZIP"
 
           if [ ! -s "$ZIP" ]; then
-            echo "::error::Source ZIP not found or empty."
+            echo "::error::Source ZIP not found."
             exit 1
           fi
 
-          echo "Source ZIP downloaded successfully."
+          echo "Source ZIP downloaded:"
           ls -lh "$ZIP"
 
       # 3. Extract and locate project
@@ -91,20 +87,14 @@ jobs:
           )
 
           if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::Abir AI Android project not found."
-
+            echo "::error::Abir AI project not found."
             find "$EXTRACT_DIR" -maxdepth 5 -type f | head -200
-
             exit 1
           fi
 
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
-          echo "Project detected:"
-          echo "$PROJECT_ROOT"
-
-          cd "$PROJECT_ROOT"
-          ls -la
+          echo "Project found: $PROJECT_ROOT"
 
       # 4. Node.js
       - name: Setup Node.js
@@ -132,67 +122,98 @@ jobs:
           packages: platform-tools
           accept-android-sdk-licenses: true
 
-      # 8. Verify files
+      # 8. Verify project
       - name: Verify Abir AI Project
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT"
 
-          REQUIRED_FILES=(
-            package.json
-            android/gradlew
-            android/gradle/wrapper/gradle-wrapper.properties
+          for FILE in \
+            package.json \
+            android/gradlew \
+            android/gradle/wrapper/gradle-wrapper.properties \
             android/app/build.gradle
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$FILE" ]; then
-              echo "::error::Missing required file: $FILE"
+          do
+            test -f "$FILE" || {
+              echo "::error::Missing $FILE"
               exit 1
-            fi
-
+            }
             echo "FOUND: $FILE"
           done
 
-          echo "Node:"
           node --version
-
-          echo "pnpm:"
           pnpm --version
-
-          echo "Java:"
           java -version
 
-          if [ -f pnpm-lock.yaml ]; then
-            echo "pnpm lockfile found."
-          else
-            echo "::warning::pnpm-lock.yaml is missing."
-          fi
-
-      # 9. Install dependencies
-      - name: Install Dependencies
+      # 9. Fix Expo Document Picker and install dependencies
+      - name: Fix Expo Dependency and Install
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT"
 
-          pnpm install --no-frozen-lockfile
+          echo "Checking expo-document-picker..."
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const file = 'package.json';
+          const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+
+          const sections = [
+            'dependencies',
+            'devDependencies',
+            'optionalDependencies'
+          ];
+
+          let found = false;
+
+          for (const section of sections) {
+            if (!pkg[section]) continue;
+
+            if (pkg[section]['expo-document-picker'] === '~57.0.5') {
+              pkg[section]['expo-document-picker'] = '~57.0.3';
+              found = true;
+            }
+          }
+
+          if (found) {
+            fs.writeFileSync(
+              file,
+              JSON.stringify(pkg, null, 2) + '\n'
+            );
+            console.log('Fixed expo-document-picker to ~57.0.3');
+          } else {
+            console.log(
+              'Current version:',
+              pkg.dependencies?.['expo-document-picker'] ||
+              pkg.devDependencies?.['expo-document-picker'] ||
+              'Not found'
+            );
+          }
+          NODE
+
+          echo "Installing dependencies..."
+
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --no-frozen-lockfile
+          else
+            pnpm install --no-lockfile
+          fi
+
+          echo "Dependencies installed."
 
       # 10. Expo configuration
       - name: Check Expo Configuration
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT"
 
           if [ -f app.json ] ||
              [ -f app.config.js ] ||
              [ -f app.config.ts ]; then
-
             pnpm exec expo config --type public
           else
             echo "Expo configuration not found."
@@ -203,27 +224,23 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-
           cd "$PROJECT_ROOT"
 
-          echo "Checking TypeScript..."
+          echo "Running TypeScript check..."
 
           if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
             pnpm run typecheck
             TS_STATUS=$?
-
           elif [ -x node_modules/.bin/tsc ]; then
             pnpm exec tsc --noEmit
             TS_STATUS=$?
-
           else
-            echo "TypeScript checker not available."
+            echo "TypeScript checker not found."
             TS_STATUS=0
           fi
 
           if [ "$TS_STATUS" -ne 0 ]; then
-            echo "::warning::TypeScript errors detected. See the log above."
-            echo "Continuing to Android build for further diagnostics."
+            echo "::warning::TypeScript errors detected. Check the log."
           else
             echo "TypeScript check passed."
           fi
@@ -235,7 +252,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT"
 
           if [ -f scripts/prepare-sherpa.sh ]; then
@@ -243,18 +259,14 @@ jobs:
             bash scripts/prepare-sherpa.sh
           else
             echo "Sherpa preparation script not found."
-            echo "Checking existing native libraries."
           fi
 
-      # 13. Verify voice files
+      # 13. Check voice files
       - name: Check Voice Engine Files
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT"
-
-          echo "Checking Sherpa libraries..."
 
           for LIB in libsherpa-onnx-jni.so libonnxruntime.so; do
             if find android -type f -name "$LIB" -print -quit | grep -q .; then
@@ -263,8 +275,6 @@ jobs:
               echo "::warning::Missing library: $LIB"
             fi
           done
-
-          echo "Checking offline voice models..."
 
           for MODEL in encoder.onnx decoder.onnx joiner.onnx tokens.txt; do
             if find . -type f -name "$MODEL" \
@@ -281,7 +291,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT/android"
 
           chmod +x gradlew
@@ -290,29 +299,28 @@ jobs:
             --no-daemon \
             --stacktrace
 
-      # 15. Locate APK
+      # 15. Find APK
       - name: Find and Verify APK
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT_ROOT"
 
           APK_DIR="android/app/build/outputs/apk/release"
 
           if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release APK directory not found."
+            echo "::error::APK directory not found."
             exit 1
           fi
 
           APK="$(find "$APK_DIR" -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "::error::APK was not generated."
+            echo "::error::APK not generated."
             exit 1
           fi
 
-          echo "APK successfully generated:"
+          echo "APK generated:"
           ls -lh "$APK"
 
           echo "APK_PATH=$PROJECT_ROOT/$APK" >> "$GITHUB_ENV"
