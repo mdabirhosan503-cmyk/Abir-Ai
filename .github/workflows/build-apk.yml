@@ -1,5 +1,5 @@
 
-name: Build Abir AI 5.5.0 Android APK
+name: Build Abir AI 5.5.2 Android APK
 
 on:
   workflow_dispatch:
@@ -12,28 +12,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: abir-ai-android-build
+  group: abir-ai-5-5-2-build
   cancel-in-progress: false
 
 env:
   CI: "true"
   EXPO_NO_TELEMETRY: "1"
   NODE_OPTIONS: "--max-old-space-size=4096"
-  SOURCE_ZIP: AbirAI-5.5.0-FULL-HISTORY-PRESERVED.zip
 
 jobs:
   build:
-    name: Build Abir AI Release APK
+    name: Build Abir AI 5.5.2 Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
-      # 1. Checkout workflow repository
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-
-      # 2. Download source ZIP from latest GitHub Release
-      - name: Download Abir AI source ZIP
+      - name: Download Abir AI 5.5.2 Source ZIP
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -41,248 +35,222 @@ jobs:
           set -euo pipefail
 
           mkdir -p "$RUNNER_TEMP/abir-source"
-          mkdir -p build-diagnostics release
 
-          gh release download \
-            --pattern "$SOURCE_ZIP" \
+          gh release download "v5.4.28-source" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip" \
             --dir "$RUNNER_TEMP/abir-source"
 
-          ZIP="$RUNNER_TEMP/abir-source/$SOURCE_ZIP"
+          test -s "$RUNNER_TEMP/abir-source/AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip"
 
-          test -s "$ZIP"
+          unzip -tq \
+            "$RUNNER_TEMP/abir-source/AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip"
 
-          unzip -tq "$ZIP"
-
-          echo "Source ZIP downloaded and verified."
-
-      # 3. Extract and automatically find actual project root
-      - name: Extract and detect project root
+      - name: Extract and Verify Project
         shell: bash
         run: |
           set -euo pipefail
 
-          EXTRACT="$RUNNER_TEMP/abir-extracted"
-          mkdir -p "$EXTRACT"
+          mkdir -p "$RUNNER_TEMP/abir-project"
 
           unzip -q \
-            "$RUNNER_TEMP/abir-source/$SOURCE_ZIP" \
-            -d "$EXTRACT"
+            "$RUNNER_TEMP/abir-source/AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip" \
+            -d "$RUNNER_TEMP/abir-project"
 
-          PROJECT_ROOT=""
+          cd "$RUNNER_TEMP/abir-project"
 
-          while IFS= read -r -d '' GRADLE_FILE; do
-            CANDIDATE="${GRADLE_FILE%/android/gradlew}"
+          test -f package.json
+          test -f pnpm-workspace.yaml
+          test -f app.json
+          test -f android/gradlew
+          test -f android/gradle/wrapper/gradle-wrapper.properties
+          test -f scripts/prepare-whisper.sh
+          test -f scripts/prepare-sherpa.sh
 
-            if [ -f "$CANDIDATE/package.json" ] &&
-               [ -f "$CANDIDATE/android/gradle/wrapper/gradle-wrapper.properties" ]; then
+          node <<'NODE'
+          const p = require('./package.json');
+          const a = require('./app.json');
 
-              if [ -z "$PROJECT_ROOT" ] ||
-                 [ "${#CANDIDATE}" -lt "${#PROJECT_ROOT}" ]; then
-                PROJECT_ROOT="$CANDIDATE"
-              fi
-            fi
-          done < <(
-            find "$EXTRACT" \
-              -type f \
-              -path '*/android/gradlew' \
-              -print0
-          )
+          if (p.version !== '5.5.2') {
+            throw new Error('package.json version mismatch: ' + p.version);
+          }
 
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "ERROR: Abir AI Android project not found."
+          if (a.expo?.version !== '5.5.2') {
+            throw new Error('Expo version mismatch: ' + a.expo?.version);
+          }
 
-            find "$EXTRACT" -maxdepth 4 -type f \
-              | head -200 \
-              > build-diagnostics/extracted-files.txt
+          if (!p.scripts?.typecheck) {
+            throw new Error('TypeScript typecheck script missing');
+          }
 
-            exit 1
-          fi
+          console.log('Abir AI 5.5.2 project verified.');
+          NODE
 
-          echo "Detected project: $PROJECT_ROOT"
+          mkdir -p "$GITHUB_WORKSPACE/build-diagnostics"
+          mkdir -p "$GITHUB_WORKSPACE/release"
 
-          mkdir -p "$GITHUB_WORKSPACE/build-source"
+          echo "PROJECT_DIR=$RUNNER_TEMP/abir-project" >> "$GITHUB_ENV"
 
-          cp -a "$PROJECT_ROOT"/. \
-            "$GITHUB_WORKSPACE/build-source/"
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
-          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/build-source" \
-            >> "$GITHUB_ENV"
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+          run_install: false
 
-          test -f build-source/package.json
-          test -f build-source/android/gradlew
-
-          echo "Project extraction successful."
-
-      # 4. Setup Java
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 5. Setup Node
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      # 6. Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses
+      - name: Install Android SDK Components
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses \
-            > /dev/null 2>&1 || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-          sdkmanager "platform-tools"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.1.12297006" \
+            "cmake;3.22.1"
 
-      # 7. Install JavaScript dependencies
-      - name: Install project dependencies
-        working-directory: build-source
+      - name: Install Project Dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          corepack enable
+          pnpm install --no-frozen-lockfile
 
-          if [ -f pnpm-lock.yaml ]; then
-            echo "Using pnpm."
-
-            PM_VERSION="$(node -p \
-              "require('./package.json').packageManager || 'pnpm@10.12.4'")"
-
-            PM_VERSION="${PM_VERSION%%+*}"
-
-            case "$PM_VERSION" in
-              pnpm@*) ;;
-              *) PM_VERSION="pnpm@10.12.4" ;;
-            esac
-
-            corepack prepare "$PM_VERSION" --activate
-            pnpm install --no-frozen-lockfile
-
-          elif [ -f yarn.lock ]; then
-            echo "Using Yarn."
-
-            corepack prepare yarn@1.22.22 --activate
-            yarn install --non-interactive
-
-          elif [ -f package-lock.json ]; then
-            echo "Using npm lockfile."
-
-            npm ci
-
-          else
-            echo "No lockfile found. Using npm install."
-
-            npm install
-          fi
-
-      # 8. Prepare Whisper if script exists
-      - name: Prepare Whisper offline engine
-        working-directory: build-source
+      - name: Validate Expo Configuration
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f scripts/prepare-whisper.sh ]; then
-            chmod +x scripts/prepare-whisper.sh
-            bash scripts/prepare-whisper.sh
-          else
-            echo "Whisper preparation script not found."
-            echo "Continuing; Gradle will validate native sources."
-          fi
+          pnpm exec expo --version \
+            | tee "$GITHUB_WORKSPACE/build-diagnostics/expo-version.log"
 
-      # 9. Prepare Sherpa ONNX if script exists
-      - name: Prepare Sherpa ONNX offline engine
-        working-directory: build-source
+          pnpm exec expo config \
+            --type public \
+            --json \
+            > "$GITHUB_WORKSPACE/build-diagnostics/expo-config.json"
+
+      - name: TypeScript Validation
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f scripts/prepare-sherpa.sh ]; then
-            chmod +x scripts/prepare-sherpa.sh
-            bash scripts/prepare-sherpa.sh
-          else
-            echo "Sherpa preparation script not found."
-            echo "Continuing; Gradle will validate native sources."
-          fi
+          pnpm run typecheck 2>&1 \
+            | tee "$GITHUB_WORKSPACE/build-diagnostics/typecheck.log"
 
-      # 10. TypeScript check if configured
-      - name: TypeScript validation
-        working-directory: build-source
+      - name: Prepare Whisper.cpp
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if node -e "
-            const p = require('./package.json');
-            process.exit(p.scripts?.typecheck ? 0 : 1);
-          "; then
+          chmod +x scripts/prepare-whisper.sh
+          bash scripts/prepare-whisper.sh
 
-            if [ -f pnpm-lock.yaml ]; then
-              pnpm run typecheck
-            elif [ -f yarn.lock ]; then
-              yarn typecheck
-            else
-              npm run typecheck
+          WHISPER="modules/abir-app-launcher/android/src/main/cpp/whisper.cpp"
+          MODEL="modules/abir-app-launcher/android/src/main/assets/models/ggml-tiny-q5_1.bin"
+
+          test -s "$WHISPER/CMakeLists.txt"
+          test -s "$WHISPER/ggml/CMakeLists.txt"
+          test -s "$WHISPER/include/whisper.h"
+          test -s "$MODEL"
+
+          sha256sum "$MODEL" \
+            | tee "$GITHUB_WORKSPACE/build-diagnostics/whisper-model.txt"
+
+      - name: Prepare Sherpa ONNX
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x scripts/prepare-sherpa.sh
+          bash scripts/prepare-sherpa.sh
+
+          ANDROID_MODULE="modules/abir-app-launcher/android"
+          JNI_DIR="$ANDROID_MODULE/src/main/jniLibs"
+          MODEL_DIR="$ANDROID_MODULE/src/main/assets/models/sherpa-bn"
+          KOTLIN_DIR="$ANDROID_MODULE/src/main/java/com/k2fsa/sherpa/onnx"
+
+          test -s "$MODEL_DIR/encoder.onnx"
+          test -s "$MODEL_DIR/decoder.onnx"
+          test -s "$MODEL_DIR/joiner.onnx"
+          test -s "$MODEL_DIR/tokens.txt"
+
+          test -d "$KOTLIN_DIR"
+
+          find "$KOTLIN_DIR" -maxdepth 1 -name '*.kt' \
+            -print -quit | grep -q .
+
+          found=0
+
+          for dir in "$JNI_DIR"/*; do
+            [ -d "$dir" ] || continue
+
+            if [ -s "$dir/libsherpa-onnx-jni.so" ] &&
+               [ -s "$dir/libonnxruntime.so" ]; then
+              found=$((found + 1))
+              echo "Verified ABI: $(basename "$dir")"
             fi
+          done
 
-          elif [ -f tsconfig.json ]; then
-            echo "No typecheck script; running TypeScript compiler."
+          test "$found" -gt 0
 
-            if [ -f pnpm-lock.yaml ]; then
-              pnpm exec tsc --noEmit
-            elif [ -f yarn.lock ]; then
-              yarn tsc --noEmit
-            else
-              npx tsc --noEmit
-            fi
-          else
-            echo "No TypeScript configuration found."
-          fi
+          (
+            cd "$MODEL_DIR"
+            sha256sum -c SHA256SUMS.txt
+          )
 
-      # 11. Configure Android project
-      - name: Configure Android project
-        working-directory: build-source
+      - name: Configure Android
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
           chmod +x android/gradlew
 
-          mkdir -p build-diagnostics
-
           printf 'sdk.dir=%s\n' "$ANDROID_HOME" \
             > android/local.properties
 
-          echo "Android project configured."
+          java -version
 
-      # 12. Gradle preflight
-      - name: Gradle preflight
-        working-directory: build-source/android
+          android/gradlew --version \
+            --no-daemon \
+            --console=plain \
+            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-version.log"
+
+      - name: Gradle Preflight
+        working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -euo pipefail
-
-          ./gradlew --version \
-            --no-daemon \
-            --stacktrace \
-            --console=plain
 
           ./gradlew help \
             --no-daemon \
             --stacktrace \
             --console=plain \
-            2>&1 | tee ../../build-diagnostics/gradle-help.log
+            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-help.log"
 
-      # 13. Build APK
       - name: Build Release APK
-        working-directory: build-source/android
+        working-directory: ${{ env.PROJECT_DIR }}/android
         shell: bash
         run: |
           set -euo pipefail
@@ -291,63 +259,57 @@ jobs:
             --no-daemon \
             --stacktrace \
             --console=plain \
-            2>&1 | tee ../../build-diagnostics/gradle-clean.log
+            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-clean.log"
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
             --stacktrace \
             --warning-mode all \
             --console=plain \
-            2>&1 | tee ../../build-diagnostics/gradle-build.log
+            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-build.log"
 
-      # 14. Verify and copy APK
       - name: Verify APK
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$(
-            find build-source/android/app/build/outputs/apk \
-              -type f \
-              -name '*.apk' \
-              -print -quit
-          )"
+          APK="$(find android/app/build/outputs/apk/release \
+            -type f -name '*.apk' -print -quit)"
 
-          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not generated."
-            exit 1
-          fi
-
-          mkdir -p release
+          test -n "$APK"
+          test -s "$APK"
 
           cp "$APK" \
-            release/Abir-AI-5.5.0-release.apk
+            "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk"
 
-          unzip -tq release/Abir-AI-5.5.0-release.apk
+          unzip -tq \
+            "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk"
 
-          sha256sum release/Abir-AI-5.5.0-release.apk \
-            | tee build-diagnostics/apk-sha256.txt
+          unzip -Z1 \
+            "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk" \
+            > "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
 
-          echo "APK verification successful."
+          sha256sum \
+            "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk" \
+            | tee "$GITHUB_WORKSPACE/build-diagnostics/apk-sha256.txt"
 
-      # 15. Upload APK artifact
-      - name: Upload Android APK
+          echo "APK archive verification successful."
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.5.0-Release-APK
-          path: release/Abir-AI-5.5.0-release.apk
+          name: Abir-AI-5.5.2-Release-APK
+          path: release/Abir-AI-5.5.2-release.apk
           if-no-files-found: error
           retention-days: 14
 
-      # 16. Upload diagnostics even on failure
-      - name: Upload build diagnostics
+      - name: Upload Build Diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.5.0-Build-Diagnostics
-          path: |
-            build-diagnostics/
-            build-source/android/**/*.log
+          name: Abir-AI-5.5.2-Build-Diagnostics
+          path: build-diagnostics/
           if-no-files-found: warn
           retention-days: 14
           
