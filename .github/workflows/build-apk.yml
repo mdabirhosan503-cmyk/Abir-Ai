@@ -1,4 +1,4 @@
-name: Build Abir AI 5.5.2 Android APK
+name: Build Abir AI 5.5.4 Android APK
 
 on:
   workflow_dispatch:
@@ -11,17 +11,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: abir-ai-5-5-2-build
+  group: abir-ai-5-5-4-build
   cancel-in-progress: false
 
 env:
+  SOURCE_TAG: v5.5.4-source
+  SOURCE_ASSET: AbirAI-5.5.4-AUDIT.1.zip
   CI: "true"
   EXPO_NO_TELEMETRY: "1"
   NODE_OPTIONS: "--max-old-space-size=4096"
 
 jobs:
   build:
-    name: Build Abir AI 5.5.2 Release APK
+    name: Build Abir AI 5.5.4 Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -35,7 +37,7 @@ jobs:
           set -euo pipefail
           mkdir -p build-diagnostics release
 
-      - name: Download Abir AI 5.5.2 source ZIP
+      - name: Download Abir AI 5.5.4 source ZIP
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -44,12 +46,12 @@ jobs:
 
           mkdir -p "$RUNNER_TEMP/abir-source"
 
-          gh release download "v5.4.28-source" \
+          gh release download "${SOURCE_TAG}" \
             --repo "$GITHUB_REPOSITORY" \
-            --pattern "AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip" \
+            --pattern "${SOURCE_ASSET}" \
             --dir "$RUNNER_TEMP/abir-source"
 
-          ZIP="$RUNNER_TEMP/abir-source/AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip"
+          ZIP="$RUNNER_TEMP/abir-source/${SOURCE_ASSET}"
           test -s "$ZIP"
           unzip -tq "$ZIP"
 
@@ -64,7 +66,7 @@ jobs:
           mkdir -p "$PROJECT_DIR"
 
           unzip -q \
-            "$RUNNER_TEMP/abir-source/AbirAI-5.5.2-DASHBOARD-VOICE-UPDATE.zip" \
+            "$RUNNER_TEMP/abir-source/${SOURCE_ASSET}" \
             -d "$PROJECT_DIR"
 
           test -f "$PROJECT_DIR/package.json"
@@ -74,6 +76,8 @@ jobs:
           test -f "$PROJECT_DIR/android/gradle/wrapper/gradle-wrapper.properties"
           test -f "$PROJECT_DIR/scripts/prepare-whisper.sh"
           test -f "$PROJECT_DIR/scripts/prepare-sherpa.sh"
+          test -f "$PROJECT_DIR/app/video-studio.tsx"
+          test -s "$PROJECT_DIR/pnpm-lock.yaml"
 
           cd "$PROJECT_DIR"
 
@@ -81,16 +85,19 @@ jobs:
           const p = require('./package.json');
           const a = require('./app.json');
 
-          if (p.version !== '5.5.2') {
+          if (p.version !== '5.5.4') {
             throw new Error(`package.json version mismatch: ${p.version}`);
           }
-          if (a.expo?.version !== '5.5.2') {
+
+          if (a.expo?.version !== '5.5.4') {
             throw new Error(`app.json expo.version mismatch: ${a.expo?.version}`);
           }
+
           if (!p.scripts?.typecheck) {
             throw new Error('package.json typecheck script is missing');
           }
-          console.log('Abir AI 5.5.2 project structure verified.');
+
+          console.log('Abir AI 5.5.4 project structure verified.');
           NODE
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
@@ -112,8 +119,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # IMPORTANT: Do not request the obsolete SDK package "tools".
-      # The previous run failed because setup-android tried to install it.
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -144,7 +149,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pnpm install --no-frozen-lockfile
+          test -s pnpm-lock.yaml
+          pnpm install --frozen-lockfile
 
       - name: Validate Expo configuration
         working-directory: ${{ env.PROJECT_DIR }}
@@ -219,12 +225,33 @@ jobs:
               found=$((found + 1))
             fi
           done
+
           test "$found" -gt 0
 
           (
             cd "$MODEL_DIR"
             sha256sum -c SHA256SUMS.txt
           )
+
+      - name: Configure private Android upload key (optional)
+        env:
+          ABIR_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ABIR_UPLOAD_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "$ABIR_UPLOAD_KEYSTORE_BASE64" ]; then
+            mkdir -p "$GITHUB_WORKSPACE/signing"
+
+            printf '%s' "$ABIR_UPLOAD_KEYSTORE_BASE64" \
+              | base64 --decode \
+              > "$GITHUB_WORKSPACE/signing/release-upload.jks"
+
+            test -s "$GITHUB_WORKSPACE/signing/release-upload.jks"
+            echo "Private upload keystore configured."
+          else
+            echo "WARNING: No upload keystore secret configured. This is a debug-signed TEST APK, not a Play Store release."
+          fi
 
       - name: Configure Android project
         working-directory: ${{ env.PROJECT_DIR }}
@@ -236,6 +263,7 @@ jobs:
           printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
 
           java -version
+
           android/gradlew --version --no-daemon --console=plain \
             2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-version.log"
 
@@ -250,6 +278,11 @@ jobs:
 
       - name: Build Release APK
         working-directory: ${{ env.PROJECT_DIR }}/android
+        env:
+          ABIR_UPLOAD_STORE_FILE: ${{ secrets.ABIR_UPLOAD_KEYSTORE_BASE64 != '' && format('{0}/signing/release-upload.jks', github.workspace) || '' }}
+          ABIR_UPLOAD_STORE_PASSWORD: ${{ secrets.ABIR_UPLOAD_STORE_PASSWORD }}
+          ABIR_UPLOAD_KEY_ALIAS: ${{ secrets.ABIR_UPLOAD_KEY_ALIAS }}
+          ABIR_UPLOAD_KEY_PASSWORD: ${{ secrets.ABIR_UPLOAD_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -276,20 +309,34 @@ jobs:
           test -n "$APK"
           test -s "$APK"
 
-          cp "$APK" "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk"
-          unzip -tq "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk"
+          unzip -tq "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk"
 
-          unzip -Z1 "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk" \
+          unzip -Z1 "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk" \
             > "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
 
-          sha256sum "$GITHUB_WORKSPACE/release/Abir-AI-5.5.2-release.apk" \
+          grep -q 'libabir_whisper\.so$' "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
+          grep -q 'libsherpa-onnx-jni\.so$' "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1 || true)"
+
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk" 2>&1 \
+              | tee "$GITHUB_WORKSPACE/build-diagnostics/apk-signing.txt" || true
+
+            if grep -qi "Android Debug" "$GITHUB_WORKSPACE/build-diagnostics/apk-signing.txt"; then
+              echo "::warning::This APK is signed with the DEBUG key (test build only)."
+            fi
+          fi
+
+          sha256sum "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk" \
             | tee "$GITHUB_WORKSPACE/build-diagnostics/apk-sha256.txt"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.5.2-Release-APK
-          path: release/Abir-AI-5.5.2-release.apk
+          name: Abir-AI-5.5.4-Release-APK
+          path: release/Abir-AI-5.5.4-release.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -297,8 +344,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.5.2-Build-Diagnostics
+          name: Abir-AI-5.5.4-Build-Diagnostics
           path: build-diagnostics/
           if-no-files-found: warn
           retention-days: 14
-          
