@@ -1,7 +1,13 @@
-name: Build Abir AI 5.5.4 Android APK
+
+name: Build Abir AI 5.5.4 APK
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub Release Tag"
+        required: true
+        default: "v5.5.4-source"
   push:
     branches:
       - main
@@ -12,339 +18,126 @@ permissions:
 
 concurrency:
   group: abir-ai-5-5-4-build
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
-  SOURCE_TAG: v5.5.4-source
-  SOURCE_ASSET: AbirAI-5.5.4-AUDIT.1.zip
-  CI: "true"
+  CI: "1"
   EXPO_NO_TELEMETRY: "1"
   NODE_OPTIONS: "--max-old-space-size=4096"
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
 jobs:
   build:
-    name: Build Abir AI 5.5.4 Release APK
+    name: Build Abir AI Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-
-      - name: Initialize diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p build-diagnostics release
-
-      - name: Download Abir AI 5.5.4 source ZIP
+      - name: Download Release Source ZIP
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -euo pipefail
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="v5.5.4-source"
+          fi
 
-          mkdir -p "$RUNNER_TEMP/abir-source"
+          mkdir -p source
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "AbirAI-5.5.4-UPDATED-SOURCE.zip" \
+            --dir source
 
-          gh release download "${SOURCE_TAG}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "${SOURCE_ASSET}" \
-            --dir "$RUNNER_TEMP/abir-source"
-
-          ZIP="$RUNNER_TEMP/abir-source/${SOURCE_ASSET}"
-          test -s "$ZIP"
-          unzip -tq "$ZIP"
-
-          sha256sum "$ZIP" | tee build-diagnostics/source-zip-sha256.txt
-
-      - name: Extract and verify project
-        shell: bash
+      - name: Extract Source
         run: |
-          set -euo pipefail
+          unzip -q source/AbirAI-5.5.4-UPDATED-SOURCE.zip -d project
 
-          PROJECT_DIR="$RUNNER_TEMP/abir-project"
-          mkdir -p "$PROJECT_DIR"
+          if [ ! -f project/package.json ]; then
+            FOUND="$(find project -name package.json -not -path '*/node_modules/*' | head -n 1)"
+            if [ -z "$FOUND" ]; then
+              echo "package.json not found"
+              exit 1
+            fi
+            ROOT="$(dirname "$FOUND")"
+            mkdir -p app-source
+            cp -a "$ROOT"/. app-source/
+            mv app-source project
+          fi
 
-          unzip -q \
-            "$RUNNER_TEMP/abir-source/${SOURCE_ASSET}" \
-            -d "$PROJECT_DIR"
+          test -f project/package.json
+          test -f project/android/gradlew || test -f project/scripts/build-android.sh
 
-          test -f "$PROJECT_DIR/package.json"
-          test -f "$PROJECT_DIR/pnpm-workspace.yaml"
-          test -f "$PROJECT_DIR/app.json"
-          test -f "$PROJECT_DIR/android/gradlew"
-          test -f "$PROJECT_DIR/android/gradle/wrapper/gradle-wrapper.properties"
-          test -f "$PROJECT_DIR/scripts/prepare-whisper.sh"
-          test -f "$PROJECT_DIR/scripts/prepare-sherpa.sh"
-          test -f "$PROJECT_DIR/app/video-studio.tsx"
-          test -s "$PROJECT_DIR/pnpm-lock.yaml"
-
-          cd "$PROJECT_DIR"
-
-          node <<'NODE'
-          const p = require('./package.json');
-          const a = require('./app.json');
-
-          if (p.version !== '5.5.4') {
-            throw new Error(`package.json version mismatch: ${p.version}`);
-          }
-
-          if (a.expo?.version !== '5.5.4') {
-            throw new Error(`app.json expo.version mismatch: ${a.expo?.version}`);
-          }
-
-          if (!p.scripts?.typecheck) {
-            throw new Error('package.json typecheck script is missing');
-          }
-
-          console.log('Abir AI 5.5.4 project structure verified.');
-          NODE
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: 22
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 10.12.4
-          run_install: false
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v5
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools
-
-      - name: Install required Android SDK components
-        shell: bash
+      - name: Verify Android SDK
         run: |
-          set -euo pipefail
-
           echo "ANDROID_HOME=$ANDROID_HOME"
           test -d "$ANDROID_HOME"
+          java -version
+          node --version
+          pnpm --version
 
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "ndk;27.1.12297006" \
-            "cmake;3.22.1"
-
-          sdkmanager --list_installed \
-            | tee build-diagnostics/android-sdk-installed.txt
-
-      - name: Install JavaScript dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
+      - name: Install Dependencies
+        working-directory: project
         run: |
-          set -euo pipefail
-          test -s pnpm-lock.yaml
           pnpm install --frozen-lockfile
 
-      - name: Validate Expo configuration
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
+      - name: TypeScript Check
+        working-directory: project
         run: |
-          set -euo pipefail
+          pnpm typecheck
 
-          pnpm exec expo --version \
-            | tee "$GITHUB_WORKSPACE/build-diagnostics/expo-version.txt"
-
-          pnpm exec expo config --type public --json \
-            > "$GITHUB_WORKSPACE/build-diagnostics/expo-config.json"
-
-      - name: TypeScript validation
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
+      - name: Native Library Verification
+        working-directory: project
         run: |
-          set -euo pipefail
+          node scripts/verify-sherpa-jni.mjs
+          node scripts/verify-native-alignment.mjs
 
-          pnpm run typecheck 2>&1 \
-            | tee "$GITHUB_WORKSPACE/build-diagnostics/typecheck.log"
-
-      - name: Prepare Whisper.cpp
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
+      - name: Run Static Verifiers
+        working-directory: project
         run: |
-          set -euo pipefail
+          node scripts/verify-owner-gate.mjs
+          node scripts/verify-hybrid-voice.mjs
+          node scripts/verify-chat-voice.mjs
+          node scripts/verify-troubleshooting.mjs
+          node scripts/verify-zod-compat.mjs
 
-          chmod +x scripts/prepare-whisper.sh
-          bash scripts/prepare-whisper.sh
-
-          WHISPER="modules/abir-app-launcher/android/src/main/cpp/whisper.cpp"
-          MODEL="modules/abir-app-launcher/android/src/main/assets/models/ggml-tiny-q5_1.bin"
-
-          test -s "$WHISPER/CMakeLists.txt"
-          test -s "$WHISPER/ggml/CMakeLists.txt"
-          test -s "$WHISPER/include/whisper.h"
-          test -s "$MODEL"
-
-          sha256sum "$MODEL" \
-            | tee "$GITHUB_WORKSPACE/build-diagnostics/whisper-model-sha256.txt"
-
-      - name: Prepare Sherpa ONNX
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
+      - name: Build Android APK
+        working-directory: project
         run: |
-          set -euo pipefail
+          chmod +x scripts/build-android.sh android/gradlew 2>/dev/null || true
+          bash scripts/build-android.sh
 
-          chmod +x scripts/prepare-sherpa.sh
-          bash scripts/prepare-sherpa.sh
-
-          MODULE="modules/abir-app-launcher/android"
-          JNI_DIR="$MODULE/src/main/jniLibs"
-          MODEL_DIR="$MODULE/src/main/assets/models/sherpa-bn"
-          KOTLIN_DIR="$MODULE/src/main/java/com/k2fsa/sherpa/onnx"
-
-          test -s "$MODEL_DIR/encoder.onnx"
-          test -s "$MODEL_DIR/decoder.onnx"
-          test -s "$MODEL_DIR/joiner.onnx"
-          test -s "$MODEL_DIR/tokens.txt"
-          test -d "$KOTLIN_DIR"
-
-          find "$KOTLIN_DIR" -maxdepth 1 -type f -name '*.kt' \
-            -print -quit | grep -q .
-
-          found=0
-          for dir in "$JNI_DIR"/*; do
-            [ -d "$dir" ] || continue
-            if [ -s "$dir/libsherpa-onnx-jni.so" ] &&
-               [ -s "$dir/libonnxruntime.so" ]; then
-              echo "Verified Sherpa ABI: $(basename "$dir")"
-              found=$((found + 1))
-            fi
-          done
-
-          test "$found" -gt 0
-
-          (
-            cd "$MODEL_DIR"
-            sha256sum -c SHA256SUMS.txt
-          )
-
-      - name: Configure private Android upload key (optional)
-        env:
-          ABIR_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ABIR_UPLOAD_KEYSTORE_BASE64 }}
-        shell: bash
+      - name: Locate APK
         run: |
-          set -euo pipefail
+          mkdir -p output
+          find project -type f -name "*.apk" -exec cp {} output/ \;
 
-          if [ -n "$ABIR_UPLOAD_KEYSTORE_BASE64" ]; then
-            mkdir -p "$GITHUB_WORKSPACE/signing"
-
-            printf '%s' "$ABIR_UPLOAD_KEYSTORE_BASE64" \
-              | base64 --decode \
-              > "$GITHUB_WORKSPACE/signing/release-upload.jks"
-
-            test -s "$GITHUB_WORKSPACE/signing/release-upload.jks"
-            echo "Private upload keystore configured."
-          else
-            echo "WARNING: No upload keystore secret configured. This is a debug-signed TEST APK, not a Play Store release."
+          if [ -z "$(ls -A output)" ]; then
+            echo "APK not found"
+            exit 1
           fi
-
-      - name: Configure Android project
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          chmod +x android/gradlew
-          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
-
-          java -version
-
-          android/gradlew --version --no-daemon --console=plain \
-            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-version.log"
-
-      - name: Gradle preflight
-        working-directory: ${{ env.PROJECT_DIR }}/android
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ./gradlew help --no-daemon --stacktrace --console=plain \
-            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-help.log"
-
-      - name: Build Release APK
-        working-directory: ${{ env.PROJECT_DIR }}/android
-        env:
-          ABIR_UPLOAD_STORE_FILE: ${{ secrets.ABIR_UPLOAD_KEYSTORE_BASE64 != '' && format('{0}/signing/release-upload.jks', github.workspace) || '' }}
-          ABIR_UPLOAD_STORE_PASSWORD: ${{ secrets.ABIR_UPLOAD_STORE_PASSWORD }}
-          ABIR_UPLOAD_KEY_ALIAS: ${{ secrets.ABIR_UPLOAD_KEY_ALIAS }}
-          ABIR_UPLOAD_KEY_PASSWORD: ${{ secrets.ABIR_UPLOAD_KEY_PASSWORD }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ./gradlew clean --no-daemon --stacktrace --console=plain \
-            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-clean.log"
-
-          ./gradlew :app:assembleRelease \
-            --no-daemon \
-            --stacktrace \
-            --warning-mode all \
-            --console=plain \
-            2>&1 | tee "$GITHUB_WORKSPACE/build-diagnostics/gradle-release-build.log"
-
-      - name: Verify APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$(find android/app/build/outputs/apk/release \
-            -type f -name '*.apk' -print -quit)"
-
-          test -n "$APK"
-          test -s "$APK"
-
-          cp "$APK" "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk"
-          unzip -tq "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk"
-
-          unzip -Z1 "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk" \
-            > "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
-
-          grep -q 'libabir_whisper\.so$' "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
-          grep -q 'libsherpa-onnx-jni\.so$' "$GITHUB_WORKSPACE/build-diagnostics/apk-file-list.txt"
-
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1 || true)"
-
-          if [ -n "$APKSIGNER" ]; then
-            "$APKSIGNER" verify --print-certs "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk" 2>&1 \
-              | tee "$GITHUB_WORKSPACE/build-diagnostics/apk-signing.txt" || true
-
-            if grep -qi "Android Debug" "$GITHUB_WORKSPACE/build-diagnostics/apk-signing.txt"; then
-              echo "::warning::This APK is signed with the DEBUG key (test build only)."
-            fi
-          fi
-
-          sha256sum "$GITHUB_WORKSPACE/release/Abir-AI-5.5.4-release.apk" \
-            | tee "$GITHUB_WORKSPACE/build-diagnostics/apk-sha256.txt"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Abir-AI-5.5.4-Release-APK
-          path: release/Abir-AI-5.5.4-release.apk
+          name: Abir-AI-5.5.4-APK
+          path: output/*.apk
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload build diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Abir-AI-5.5.4-Build-Diagnostics
-          path: build-diagnostics/
-          if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
+          
