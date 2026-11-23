@@ -16,9 +16,9 @@ concurrency:
 
 env:
   # Release tag and file name of the source ZIP this workflow builds.
-  # Upload AbirAI-5.5.4-FINAL-FIXED.zip to that release (or edit these two lines).
+  # This must match the uploaded GitHub Release asset filename exactly.
   SOURCE_TAG: v5.5.4-source
-  SOURCE_ASSET: AbirAI-5.5.4-UPDATED-SOURCE.zip
+  SOURCE_ASSET: AbirAI-5.5.4-WORKFLOW-FIXED-SOURCE.zip
   CI: "true"
   EXPO_NO_TELEMETRY: "1"
   NODE_OPTIONS: "--max-old-space-size=4096"
